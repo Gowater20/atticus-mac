@@ -352,7 +352,7 @@
     <p class="lede" id="brainlede">Atticus thinks with Claude, on your Claude plan.</p>
     <h3>Model</h3>
     <div class="group">
-      <div class="row"><div class="t"><b>AI client</b><span id="clientwhy"></span></div><div class="seg" data-k="client"><button data-v="claude">Claude</button><button data-v="devin">Devin</button><button data-v="pi">Pi</button></div></div>
+      <div class="row"><div class="t"><b>AI client</b><span id="clientwhy"></span></div><div class="seg" data-k="client"><button data-v="claude">Claude</button><button data-v="devin">Devin</button><button data-v="pi">Pi</button><button data-v="gemini">Gemini</button></div></div>
       <div class="row"><div class="t"><b>Intelligence</b><span id="routingwhy"></span></div><div class="seg" data-k="routing"><button data-v="cheapest">Cheapest</button><button data-v="balanced">Balanced</button><button data-v="capable">Most capable</button></div></div>
       <div class="row"><div class="t"><b>Work model</b><span>Opus is stronger, uses more of your plan.</span></div><div class="seg" data-k="model"><button data-v="sonnet">Sonnet</button><button data-v="opus">Opus</button></div></div>
     </div>
@@ -636,7 +636,7 @@
     capable: 'Work model for everything. Slower.' };
   const dim = (k, off) => { const e = document.querySelector(`[data-k=${k}]`); e.closest('.row').classList.toggle('dim', off); if (e.type === 'range') e.disabled = off; };   // greyed, not hidden: rows below stay put
   function paint() {
-    const devin = P.client === 'devin', pi = P.client === 'pi', other = devin || pi;
+    const devin = P.client === 'devin', pi = P.client === 'pi', gemini = P.client === 'gemini', other = devin || pi || gemini;
     if (!P.routing) P.routing = P.model && P.model !== 'haiku' ? 'capable' : P.escalate === false || P.escalateAuto === false ? 'cheapest' : 'balanced';
     if (!recording) showCaps(P.hotkeyLabel);
     $('reset').style.display = P.hotkeyLabel === '⌃⌥Space' ? 'none' : '';
@@ -665,16 +665,19 @@
     SERVER.forEach(k => { if (document.activeElement !== $(k)) $(k).value = P[k] || ''; });
     $('agentServerModel').hidden = !P.apiBase || other;
     $('brainlede').textContent = devin ? 'Atticus thinks with Devin, on your Devin plan.' : pi ? 'Atticus thinks with the provider and model selected in Pi.'
+      : gemini ? 'Atticus thinks with Google Gemini (agy), on your Gemini plan.'
       : P.apiBase ? 'Atticus thinks with the model on your custom server.' : 'Atticus thinks with Claude, on your Claude plan.';
     $('clientwhy').textContent = devin ? 'Devin CLI, with Atticus’s safety check.'
       : pi ? 'Pi CLI, local models too, with Atticus’s safety check.'
+      : gemini ? 'Google Antigravity (agy · Gemini 3.8 Flash), flat plan.'
       : P.apiBase ? 'Uses your server below.' : 'No API key needed.';
     document.querySelector('[data-k=routing]').closest('.row').hidden = other || !!P.apiBase;
     document.querySelector('[data-k=model]').closest('.row').hidden = other || !!P.apiBase || P.routing === 'cheapest';
     $('agentsheading').hidden = $('agentsettings').hidden = other;
-    $('planname').textContent = devin ? 'Devin' : pi ? 'Pi' : 'Claude';
+    $('planname').textContent = devin ? 'Devin' : pi ? 'Pi' : gemini ? 'Gemini' : 'Claude';
     $('safenote').textContent = devin ? 'Every Devin command waits for approval. File-edit, MCP and subagent tools stay off.'
       : pi ? 'Every Pi command waits for approval. File-edit and MCP tools stay off.'
+      : gemini ? 'Runs with Antigravity and Atticus’s safety check.'
       : 'Risky actions need approval. Background agents use a scratch folder.';
     $('meetingDemo').hidden = $('meetingPrepOpen').hidden = !P.meeting; $('meetingOn').hidden = !!P.meeting;   // off: one way to turn it on, not two dead buttons
   }

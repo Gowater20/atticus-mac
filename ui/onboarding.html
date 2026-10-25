@@ -550,6 +550,7 @@
     <h3 id="prov-h">Choose your AI provider</h3>
     <p>Atticus thinks with one of these. Change it anytime in Settings.</p>
     <div role="radiogroup" aria-labelledby="prov-h">
+      <button class="opt" role="radio" data-p="gemini"><span class="dot"></span><div class="txt"><b>Google Gemini</b><span>Google Antigravity (agy · Gemini 3.8 Flash), or Gemini API.</span></div></button>
       <button class="opt" role="radio" data-p="claude"><span class="dot"></span><div class="txt"><b>Claude</b><span>Your Claude Pro or Max plan, through Claude Code.</span></div></button>
       <button class="opt" role="radio" data-p="devin"><span class="dot"></span><div class="txt"><b>Devin</b><span>Your Devin plan, through the Devin CLI.</span></div></button>
       <button class="opt" role="radio" data-p="pi"><span class="dot"></span><div class="txt"><b>Pi</b><span>The provider and model set in the Pi CLI, including local models.</span></div></button>
@@ -660,14 +661,14 @@
   $('list').innerHTML = rows(P, 'p-');
   // Not everyone has a Claude plan: "Change provider" offers the same clients as Settings → Intelligence.
   $('p-claude').querySelector('.txt').insertAdjacentHTML('beforeend', '<button class="alt" id="client-alt">Change provider</button>');
-  const NAMES = { claude: 'Claude Plan', devin: 'Devin', pi: 'Pi', server: 'Custom Server' };
+  const NAMES = { claude: 'Claude Plan', devin: 'Devin', pi: 'Pi', server: 'Custom Server', gemini: 'Google Gemini' };
   let want = null, provider = 'claude', saved = { apiBase: '', apiModel: '' }, pick = 'claude', probeTimer = 0;
   const srvOK = () => /^https?:\/\/\S+$/.test($('srv-base').value.trim()) && !!$('srv-model').value.trim();
   const paintProv = () => {
     document.querySelectorAll('.opt').forEach(o => o.setAttribute('aria-checked', String(o.dataset.p === pick)));
     $('srv').hidden = pick !== 'server';
     document.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.dataset.base === $('srv-base').value.trim()));
-    $('prov-use').textContent = 'Use ' + { claude: 'Claude', devin: 'Devin', pi: 'Pi', server: 'This Server' }[pick];
+    $('prov-use').textContent = 'Use ' + ({ claude: 'Claude', devin: 'Devin', pi: 'Pi', server: 'This Server', gemini: 'Gemini' }[pick] || 'Provider');
     $('prov-use').disabled = pick === 'server' && !srvOK();
   };
   const probe = () => {   // ask the server for its models, so the Model box can offer them
@@ -705,7 +706,7 @@
     }
   });
   $('prov-use').onclick = () => {
-    const m = { do: 'provider', client: ['devin', 'pi'].includes(pick) ? pick : 'claude' };
+    const m = { do: 'provider', client: ['devin', 'pi', 'gemini'].includes(pick) ? pick : 'claude' };
     if (pick === 'claude') m.apiBase = '';
     if (pick === 'server') {
       m.apiBase = $('srv-base').value.trim(); m.apiModel = $('srv-model').value.trim();

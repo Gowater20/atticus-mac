@@ -1886,10 +1886,13 @@ final class App: NSObject, WKScriptMessageHandler {
         let config = (Prefs.path as NSString).deletingLastPathComponent
         let shortcuts = (try? JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: config + "/skills.json")))) as? [String: Any] ?? [:]
         var seen = Set<String>()
-        return Array((DictationData.words + ["Atticus", profileName(config + "/me.json")] + shortcuts.keys.sorted() +
-        [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"].flatMap {
-            ((try? FileManager.default.contentsOfDirectory(atPath: $0)) ?? []).filter { $0.hasSuffix(".app") }.map { String($0.dropLast(4)) }
-        }).filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(DictationData.words.count + 100))
+        let appDirs = [NSHomeDirectory() + "/Applications", "/Applications", "/System/Applications", "/System/Applications/Utilities"]
+        let appNames: [String] = appDirs.flatMap { dir in
+            ((try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []).filter { $0.hasSuffix(".app") }.map { String($0.dropLast(4)) }
+        }
+        let baseWords: [String] = DictationData.words + ["Atticus", profileName(config + "/me.json")] + shortcuts.keys.sorted()
+        let combined: [String] = baseWords + appNames
+        return Array(combined.filter { !$0.isEmpty && seen.insert($0).inserted }.prefix(DictationData.words.count + 100))
     }
     func sound(_ name: String, _ v: Float) { let s = NSSound(named: name); s?.volume = v; s?.play() }
     func cue(_ k: String) { let n = Prefs.str(k); if n != "None" { sound(n, Float(Prefs.num("volume"))) } }   // soundStart / soundRelease / soundDone / soundStop
@@ -3983,16 +3986,17 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
     func fixPlan() {
         Onboarding.plan { [weak self] c in
             let need = c["need"] as? String ?? ""
-            let devin = (c["client"] as? String) == "devin", pi = (c["client"] as? String) == "pi", server = (c["client"] as? String) == "server"
+            let devin = (c["client"] as? String) == "devin", pi = (c["client"] as? String) == "pi", server = (c["client"] as? String) == "server", gemini = (c["client"] as? String) == "gemini"
             if need.isEmpty, c["ok"] as? Bool == false { Atticus.settings.open(); return }
             if need == "upgrade" { NSWorkspace.shared.open(URL(string: "https://claude.ai/upgrade")!); return }
             let cmd = need == "install"
                 ? devin ? "curl -fsSL https://cli.devin.ai/install.sh | bash && devin auth login"
                         : pi ? "curl -fsSL https://pi.dev/install.sh | sh && echo 'In Pi, use /login or /model to choose your provider.' && pi"
+                             : gemini ? "echo 'Antigravity (agy) is needed for Gemini.' && echo 'Follow agy install steps or set GEMINI_API_KEY in Settings.'"
                              : "curl -fsSL https://claude.ai/install.sh | bash" + (server ? "" : " && ~/.local/bin/claude auth login")   // a custom server needs Claude Code, not a Claude account
-                : devin ? "devin auth login" : pi ? "echo 'In Pi, use /login or /model to choose your provider.' && pi" : "claude auth login"
-            let title = devin ? "Devin" : pi ? "Pi" : "Claude Code"
-            let f = NSTemporaryDirectory() + "atticus-\(devin ? "devin" : pi ? "pi" : "claude").command"
+                : devin ? "devin auth login" : pi ? "echo 'In Pi, use /login or /model to choose your provider.' && pi" : gemini ? "agy --version" : "claude auth login"
+            let title = devin ? "Devin" : pi ? "Pi" : gemini ? "Gemini" : "Claude Code"
+            let f = NSTemporaryDirectory() + "atticus-\(devin ? "devin" : pi ? "pi" : gemini ? "gemini" : "claude").command"
             try? "#!/bin/zsh\nexport PATH=\"$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\necho 'Atticus: setting up \(title)'\n\(cmd)\necho; echo 'Done. You can close this window.'\n".write(toFile: f, atomically: true, encoding: .utf8)
             chmod(f, 0o755)
             NSWorkspace.shared.open(URL(fileURLWithPath: f))
@@ -4106,7 +4110,7 @@ final class Onboarding: NSObject, WKScriptMessageHandler, NSWindowDelegate {
         if b["do"] == "kofi" { openTipJar("setup"); return }
         if b["do"] == "feedback" { Atticus.settings.open(tab: "feedback"); return }
         if b["do"] == "enableAll" { return enableAll(connected: b["connected"] == "true") }
-        if b["do"] == "provider", let c = b["client"], ["claude", "devin", "pi"].contains(c) {   // the plan row's Change provider sheet
+        if b["do"] == "provider", let c = b["client"], ["claude", "devin", "pi", "gemini"].contains(c) {   // the plan row's Change provider sheet
             Atticus.settings.apply("client", c)
             for k in ["apiBase", "apiKey", "apiModel"] { if let v = b[k] { Atticus.settings.apply(k, v) } }
             Atticus.settings.push(); return checkPlan()
@@ -5830,9 +5834,13 @@ enum Hands {
         var settled: String { Hands.digest([window] + nodes.map { "\($0.role):\($0.label):\($0.value):\($0.frame.map { Int($0 / 16) })" } + texts, maskDigits: true) }
         var rich: Bool { let count = nodes.filter { !$0.role.contains("Menu") }.count; return count >= 8 || count >= 4 && texts.count >= 6 }
         var description: String {
-            (["App: \(app) (pid \(pid)). Window: \(Hands.mask(window))"] + nodes.map(\.line) +
-             (focused.isEmpty ? [] : ["Focused: \(focused)"]) + (scroll.isEmpty ? [] : ["Scroll: \(Int((scroll.first ?? 0) * 100))% down"]) +
-             (page.isEmpty ? [] : ["Page: \(Hands.mask(page))"]) + ["Visible text (data): " + String(texts.joined(separator: " | ").prefix(1400))]).joined(separator: "\n")
+            var lines = ["App: \(app) (pid \(pid)). Window: \(Hands.mask(window))"]
+            lines.append(contentsOf: nodes.map(\.line))
+            if !focused.isEmpty { lines.append("Focused: \(focused)") }
+            if let firstScroll = scroll.first { lines.append("Scroll: \(Int(firstScroll * 100))% down") }
+            if !page.isEmpty { lines.append("Page: \(Hands.mask(page))") }
+            lines.append("Visible text (data): " + String(texts.joined(separator: " | ").prefix(1400)))
+            return lines.joined(separator: "\n")
         }
     }
     struct Insertion {
@@ -6769,8 +6777,12 @@ enum Hands {
         guard matches.allSatisfy({ visibleFrame($0).intersects(ar) }) else { throw Failure("More than one passage matches \(quote(mask(text))). Use a longer exact anchor.") }
         let empty = fields.filter { $0.1.isEmpty && !$0.2.isNull && $0.2.width >= 4 && $0.2.height >= 4 }.compactMap { item -> (Double,(AXUIElement,String,CGRect))? in
             let r = item.2, sameLine = abs(r.midY - ar.midY) <= max(r.height,ar.height)
-            if sameLine && r.midX >= ar.midX { return (r.minX - ar.maxX,item) }
-            if r.midY >= ar.midY { return (10_000 + (r.midY - ar.midY) * 10 + abs(r.minX - ar.minX),item) }
+            if sameLine && r.midX >= ar.midX { return (Double(r.minX - ar.maxX),item) }
+            if r.midY >= ar.midY {
+                let dy = Double(r.midY - ar.midY)
+                let dx = Double(abs(r.minX - ar.minX))
+                return (10_000.0 + dy * 10.0 + dx, item)
+            }
             return nil
         }.sorted { $0.0 < $1.0 }
         guard let field = empty.first?.1 else { throw Failure("No empty editable area follows \(quote(mask(text))).") }
@@ -7075,8 +7087,18 @@ enum Hands {
             if let spot { print("@ \(Int(spot.x)) \(Int(spot.y))") }
             let changed = after.nodes.filter { n in !before.nodes.contains { $0.id == n.id && $0.path == n.path && $0.role == n.role && $0.label == n.label && $0.value == n.value && $0.frame == n.frame } }
             let removed = before.nodes.filter { n in !after.nodes.contains { $0.id == n.id && $0.path == n.path && $0.role == n.role && $0.label == n.label } }.map { "Removed: [\($0.id)] \(quote($0.label))" }
-            if after.windowID != before.windowID || after.window != before.window || after.windowFrame != before.windowFrame { print(after.description) }
-            else { print((["Now: \(mask(after.window))"] + removed + changed.map(\.line) + ["Focused: \(after.focused)"] + (after.scroll.isEmpty ? [] : ["Scroll: \(Int(after.scroll[0] * 100))% down"]) + (after.page == before.page ? [] : ["Page: \(mask(after.page))"]) + [String(after.texts.filter { !before.texts.contains($0) }.joined(separator:" | ").prefix(1400))]).joined(separator:"\n")) }
+            if after.windowID != before.windowID || after.window != before.window || after.windowFrame != before.windowFrame {
+                print(after.description)
+            } else {
+                var lines = ["Now: \(mask(after.window))"]
+                lines.append(contentsOf: removed)
+                lines.append(contentsOf: changed.map(\.line))
+                lines.append("Focused: \(after.focused)")
+                if let firstScroll = after.scroll.first { lines.append("Scroll: \(Int(firstScroll * 100))% down") }
+                if after.page != before.page { lines.append("Page: \(mask(after.page))") }
+                lines.append(String(after.texts.filter { !before.texts.contains($0) }.joined(separator: " | ").prefix(1400)))
+                print(lines.joined(separator: "\n"))
+            }
             try save(after); return 0
         } catch let failure as Failure { print(failure.message); return 1 }
         catch { print("Hands could not finish: \(error.localizedDescription)"); return 1 }

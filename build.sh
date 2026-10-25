@@ -16,7 +16,7 @@ trap 'rm -rf "$STAGE"' EXIT
 swiftc -O -target "$(uname -m)-apple-macos26.0" Atticus.swift -o "$STAGE/Atticus"
 APP=~/Applications/Atticus.app   # in Applications so System Settings can list it for permissions
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
-cp atticus.py "$APP/Contents/Resources/"
+cp atticus*.py "$APP/Contents/Resources/"
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
 cp ui/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<P
@@ -41,7 +41,7 @@ P
 mv "$STAGE/Atticus" "$APP/Contents/MacOS/Atticus"
 # With a code-signing identity named "Atticus Local Signing" in the keychain, macOS keeps permissions across
 # rebuilds and auto-updates; ad hoc signing would ask for every permission again after each one. So make it once.
-ID=$(security find-identity -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
+ID=$(security find-identity -v -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
 if [ -z "$ID" ]; then
   K=$(mktemp -d)
   /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=Atticus Local Signing" -addext "extendedKeyUsage=critical,codeSigning" \
@@ -49,9 +49,9 @@ if [ -z "$ID" ]; then
   /usr/bin/openssl pkcs12 -export -inkey "$K/k.pem" -in "$K/c.pem" -out "$K/a.p12" -passout pass:atticus 2>/dev/null &&
   security import "$K/a.p12" -P atticus -T /usr/bin/codesign >/dev/null 2>&1 || true   # fails quietly: ad hoc still works
   rm -rf "$K"
-  ID=$(security find-identity -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
+  ID=$(security find-identity -v -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
 fi
-codesign -s "${ID:--}" --force "$APP"
+codesign -s "${ID:--}" --force "$APP" 2>/dev/null || codesign -s - --force "$APP"
 # register with macOS, or System Settings can't list it for permissions
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 AGENT=~/Library/LaunchAgents/com.atticus.app.plist   # starts at login, restarts if it crashes (Quit stays quit)

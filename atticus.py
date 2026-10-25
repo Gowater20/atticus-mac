@@ -576,7 +576,7 @@ DENY = [f'Bash({c}:*)' for c in DENIED]
 def client():
     """The configured AI client name; anything unrecognized falls back to 'claude'."""
     c = pref('client', 'claude')
-    return c if c in ('claude', 'devin', 'pi') else 'claude'
+    return c if c in ('claude', 'devin', 'pi', 'gemini') else 'claude'
 
 # Safe mode (Settings, on by default): the gate checks every command; background agents also use Claude Code's sandbox.
 # Main asks do not advertise that sandbox to the model: their gated helpers must open apps and sites normally.
@@ -3702,6 +3702,7 @@ def tip(reply, taught=''):
 def plan():
     """Can Atticus think? The configured AI client must be installed and signed in.
     -> {'ok': bool, 'need': '' | 'install' | 'login' | 'upgrade', 'client': name, 'text': one line for the user}"""
+    if client() == 'gemini': from atticus_gemini import check_gemini_setup; return check_gemini_setup()
     if client() == 'devin': return {**devin_plan(), 'client': 'devin'}
     if client() == 'pi': return {**pi_plan(), 'client': 'pi'}
     return {**claude_plan(), 'client': 'server' if server() else 'claude'}
@@ -5208,6 +5209,9 @@ def run(task, p=None, shots=(), auto_work=False, *, request=None, main_only=Fals
     run.observed = []
     run.work = False   # set before the Devin/Pi paths too: main() reads run.work after every client
     run.why = ''   # why it failed, one fixed word for PostHog
+    if client() == 'gemini':
+        from atticus_gemini import run_gemini
+        return run_gemini(task, shots, request=request)
     if client() == 'devin':
         return run_devin(task, shots, request=request)
     if client() == 'pi':
