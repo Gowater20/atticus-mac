@@ -978,6 +978,10 @@ def wants_focus(task=None, sites=False):
 
 
 def asks_front(task):
+    try:
+        import atticus_i18n
+        if atticus_i18n.asks_front_it(task): return True
+    except Exception: pass
     return not re.search(r'\b(background|behind)\b', task, re.I) and any(
         (m[1].lower() != 'open' or re.match(r'\s+\w', task[m.end():]) and not re.search(r'\b(is|are|was|were|be|already)\s*$', task[:m.start()], re.I)) and
         not re.search(r"\b(don.t|do not|never|without|avoid|no need to)\b[^,;.]*$", task[:m.start()].rsplit(' but ', 1)[-1], re.I)
@@ -2016,7 +2020,7 @@ def gist(text):
     return [{'create': 'make', 'start': 'make'}.get(w, w) for w in re.findall(r"[a-z0-9'.-]+", plain(text)) if w not in STOP | FILLER]
 
 
-def fast(text):
+def _fast_inner(text):
     """Simple commands with no AI: learned shortcuts, open <app/site>, close <app>, snap/move <it/app> left/right/full/center, to laptop/monitor.
     Returns a reply, or None to hand the request to Haiku."""
     fast.cmds = []
@@ -2164,6 +2168,53 @@ def fast(text):
     fast.cmds = [PLACE + ' ' + shlex.join([proc_of(app), where, screen])]
     Path(LAST).write_text(app)
     return f'{app}: {where.replace("fullscreen", "full screen")}' + (f' on {screen}' if screen != 'current' else '') + '.'
+
+
+def fast(text):
+    """Simple commands with no AI: learned shortcuts, open <app/site>, close <app>, snap/move <it/app> left/right/full/center, to laptop/monitor.
+    Supports English and Italian commands with automatic i18n translation, System 1 decision engine, and continuous learning rollback."""
+    fast.cmds = []
+    fast.shortcut = fast.failed = None
+    orig_text = text
+
+    # 1. Continuous Learning / Negative Feedback Trigger (Rollback)
+    try:
+        import atticus_feedback
+        if atticus_feedback.is_negative_trigger(text):
+            handled, msg = atticus_feedback.handle_annulla()
+            if handled:
+                return msg
+    except Exception:
+        pass
+
+    # 2. System 1 Native Automation Engine (Word, Window, System Operations)
+    try:
+        from system_one.engine import SystemOneEngine
+        s1 = getattr(fast, '_s1_engine', None)
+        if not s1:
+            s1 = fast._s1_engine = SystemOneEngine()
+        conf, intent, params, alts = s1.analyze(text)
+        if conf >= 0.85:
+            ok, rep = s1.execute(intent, params, prompt=orig_text)
+            if ok:
+                return rep
+    except Exception:
+        pass
+
+    # 3. Standard i18n translation & original fast() logic
+    try:
+        import atticus_i18n
+        text = atticus_i18n.translate_fast_command(text)
+    except Exception:
+        pass
+    res = _fast_inner(text)
+    if res:
+        try:
+            import atticus_i18n
+            return atticus_i18n.localize_reply(res, orig_text)
+        except Exception:
+            pass
+    return res
 
 
 # Ways to say a screen or a size, in any order: "full screen chrome on my big screen", "move chrome to the external display and maximize it"

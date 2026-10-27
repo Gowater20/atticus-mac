@@ -1,0 +1,76 @@
+{
+  "version": "1.0",
+  "apps": {
+    "word": {
+      "name": "Microsoft Word",
+      "bundle_id": "com.microsoft.Word",
+      "actions": {
+        "create_document": {
+          "description": "Crea nuovo documento con titolo e testo corpo formattati",
+          "triggers_it": [
+            "apri file vuoto", "nuovo documento word", "crea documento word", "scrivi su word", "crea un file word"
+          ],
+          "parameters": {
+            "title": {"type": "string", "default": ""},
+            "title_bold": {"type": "boolean", "default": true},
+            "title_size": {"type": "integer", "default": 20},
+            "body": {"type": "string", "default": ""},
+            "body_size": {"type": "integer", "default": 12}
+          }
+        },
+        "format_keyword": {
+          "description": "Evidenzia o formatta in grassetto parole chiave nel documento",
+          "triggers_it": [
+            "metti in grassetto la parola", "evidenzia la parola", "evidenzia", "grassetto su"
+          ],
+          "parameters": {
+            "keyword": {"type": "string", "required": true},
+            "bold": {"type": "boolean", "default": false},
+            "highlight": {"type": "string", "default": "yellow"}
+          }
+        },
+        "save_document": {
+          "description": "Salva il documento attivo in formato docx o esporta in pdf",
+          "triggers_it": [
+            "salva documento", "salva come", "esporta in pdf", "salva word"
+          ],
+          "parameters": {
+            "path": {"type": "string", "default": "~/Desktop/documento.docx"},
+            "as_pdf": {"type": "boolean", "default": false}
+          }
+        },
+        "close_document": {
+          "description": "Chiude il documento attivo (salvando o scartando)",
+          "triggers_it": [
+            "chiudi documento", "chiudi senza salvare", "annulla documento"
+          ],
+          "parameters": {
+            "saving": {"type": "boolean", "default": false}
+          }
+        }
+      }
+    },
+    "window": {
+      "name": "Window Management",
+      "actions": {
+        "snap_left": {
+          "triggers_it": ["a sinistra", "metti a sinistra", "sposta a sinistra"],
+          "where": "left"
+        },
+        "snap_right": {
+          "triggers_it": ["a destra", "metti a destra", "sposta a destra"],
+          "where": "right"
+        },
+        "maximize": {
+          "triggers_it": ["a tutto schermo", "schermo intero", "massimizza", "ingrandisci"],
+          "where": "full"
+        },
+        "center": {
+          "triggers_it": ["al centro", "centra", "in mezzo"],
+          "where": "center"
+        }
+      }
+    }
+  }
+}
+

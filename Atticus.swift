@@ -485,15 +485,21 @@ func siriVoice() {
 struct ReadAloudVoice {
     let name: String, language: String, quality: AVSpeechSynthesisVoiceQuality
 }
-func bestEnglishVoice(_ voices: [ReadAloudVoice], region: String?) -> ReadAloudVoice? {
+func bestVoiceForSystem(_ voices: [ReadAloudVoice], region: String?) -> ReadAloudVoice? {
     func rank(_ q: AVSpeechSynthesisVoiceQuality) -> Int { q == .premium ? 2 : q == .enhanced ? 1 : 0 }
-    return voices.filter { $0.language.lowercased().hasPrefix("en") && ($0.quality == .premium || $0.quality == .enhanced) }.sorted {
+    let sysLang = (Locale.current.language.languageCode?.identifier ?? "en").lowercased()
+    let candidates = voices.filter { $0.language.lowercased().hasPrefix(sysLang) && ($0.quality == .premium || $0.quality == .enhanced) }
+    let pool = !candidates.isEmpty ? candidates : voices.filter { $0.language.lowercased().hasPrefix("en") && ($0.quality == .premium || $0.quality == .enhanced) }
+    return pool.sorted {
         let quality = rank($0.quality) - rank($1.quality)
         if quality != 0 { return quality > 0 }
         let local = Locale(identifier: $0.language).region?.identifier == region
         let other = Locale(identifier: $1.language).region?.identifier == region
         return local != other ? local : $0.name < $1.name
     }.first
+}
+func bestEnglishVoice(_ voices: [ReadAloudVoice], region: String?) -> ReadAloudVoice? {
+    bestVoiceForSystem(voices, region: region)
 }
 let installedReadAloudVoice = bestEnglishVoice(AVSpeechSynthesisVoice.speechVoices().map {
     ReadAloudVoice(name: $0.name, language: $0.language, quality: $0.quality)
@@ -624,11 +630,22 @@ func callJS(_ web: WKWebView?, _ fn: String, _ args: [Any]) {
     web?.evaluateJavaScript("\(fn)(...\(j))")
 }
 
-// Load ui/<name> with orbs.js inlined at its /*ORBS*/ marker.
+// Load ui/<name> with orbs.js and i18n.js inlined.
 func loadPage(_ web: WKWebView, _ name: String) {
-    let html = (try? String(contentsOfFile: dir + "/ui/" + name, encoding: .utf8)) ?? "missing " + name
+    var html = (try? String(contentsOfFile: dir + "/ui/" + name, encoding: .utf8)) ?? "missing " + name
     let orbs = (try? String(contentsOfFile: dir + "/ui/orbs.js", encoding: .utf8)) ?? ""
-    web.loadHTMLString(html.replacingOccurrences(of: "/*ORBS*/", with: orbs), baseURL: nil)
+    let i18n = (try? String(contentsOfFile: dir + "/ui/i18n.js", encoding: .utf8)) ?? ""
+    html = html.replacingOccurrences(of: "/*ORBS*/", with: orbs)
+    if !i18n.isEmpty {
+        let isIt = (Locale.current.language.languageCode?.identifier ?? "en").lowercased() == "it"
+        let script = "<script>\nwindow.__ATTICUS_LANG__ = '\(isIt ? "it" : "en")';\n\(i18n)\n</script>"
+        if let idx = html.range(of: "</body>", options: .backwards)?.lowerBound {
+            html.insert(contentsOf: script, at: idx)
+        } else {
+            html += script
+        }
+    }
+    web.loadHTMLString(html, baseURL: nil)
 }
 
 // The screen under the mouse, else the main one.
@@ -1783,13 +1800,17 @@ final class App: NSObject, WKScriptMessageHandler {
     var speechFormat: AVAudioFormat?, preparingSpeech = false   // what the model wants (found at launch and when the model changes)
     // Settings → Speech model: Apple's newer SpeechTranscriber, or the Dictation model the keyboard mic uses.
     // Dictation drops fastResults / frequentFinalization (Apple: faster but less accurate); asks keep them for live commands.
+    func activeSpeechLocale() -> Locale {
+        let sysLang = (Locale.current.language.languageCode?.identifier ?? "en").lowercased()
+        return sysLang == "it" ? Locale(identifier: "it-IT") : Locale(identifier: "en-US")
+    }
     func speechModule(dictate: Bool = false) -> any SpeechModule {
-        let en = Locale(identifier: "en-US"), locale = en   // SpeechTranscriber rejects the Mac locale ("unsupported locale") even when SFSpeechRecognizer lists it: every voice ask died (1.5.0)
+        let active = activeSpeechLocale(), locale = active
         if Prefs.str("speechModel") == "dictation" {
-            return dictate ? DictationTranscriber(locale: en, contentHints: [.shortForm], transcriptionOptions: [.punctuation], reportingOptions: [.volatileResults], attributeOptions: [])
+            return dictate ? DictationTranscriber(locale: active, contentHints: [.shortForm], transcriptionOptions: [.punctuation], reportingOptions: [.volatileResults], attributeOptions: [])
                 : DictationTranscriber(locale: locale, preset: .progressiveShortDictation)
         }
-        return dictate ? SpeechTranscriber(locale: en, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
+        return dictate ? SpeechTranscriber(locale: active, transcriptionOptions: [], reportingOptions: [.volatileResults], attributeOptions: [])
             : SpeechTranscriber(locale: locale, preset: .progressiveTranscription)
     }
     func prepareSpeech() {   // make sure the speech model is installed, and learn its audio format
@@ -5389,8 +5410,9 @@ final class MeetingCopilot: NSObject, WKScriptMessageHandler {
                 let micAllowed = demo ? true : await AVCaptureDevice.requestAccess(for: .audio)
                 guard running, generation == g, !Task.isCancelled else { return }
                 guard micAllowed else { stop(); js("error", "Allow Microphone access for Atticus in System Settings"); return }
-                let mic = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .progressiveTranscription)
-                let tr = SpeechTranscriber(locale: Locale(identifier: "en-US"), preset: .progressiveTranscription)
+                let mLoc = (Locale.current.language.languageCode?.identifier ?? "en").lowercased() == "it" ? Locale(identifier: "it-IT") : Locale(identifier: "en-US")
+                let mic = SpeechTranscriber(locale: mLoc, preset: .progressiveTranscription)
+                let tr = SpeechTranscriber(locale: mLoc, preset: .progressiveTranscription)
                 if let request = try await AssetInventory.assetInstallationRequest(supporting: [tr]) { try await request.downloadAndInstall() }
                 guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [tr]) else {
                     if running && generation == g { stop(); js("error", "Speech recognition is unavailable. Resume to try again.") }; return

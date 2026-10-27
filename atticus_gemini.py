@@ -130,6 +130,11 @@ def _extract_agy_tool(obj):
 def _run_agy(att, ask, task, shots, request, agy_bin):
     model = _model(att, DEFAULT_AGY_MODEL)
     system = att.system_prompt(att.ASK_FIRST if att.pref('safe', True) else att.NEVER)
+    try:
+        import atticus_i18n
+        system += atticus_i18n.system_prompt_addon()
+    except Exception:
+        pass
     user_text = '\n\n'.join(b['text'] for b in att.user_content(task, request=request))
     shot_lines = [f'- {label}: {path}' for path, label in shots if os.path.exists(path)]
     if shot_lines:
@@ -293,6 +298,11 @@ def _run_api(att, ask, task, shots, request, api_key):
     """Direct Gemini REST API fallback with multi-turn tool calling gated by Atticus."""
     model = _model(att, DEFAULT_API_MODEL)
     system = att.system_prompt(att.ASK_FIRST if att.pref('safe', True) else att.NEVER)
+    try:
+        import atticus_i18n
+        system += atticus_i18n.system_prompt_addon()
+    except Exception:
+        pass
 
     parts = []
     for path, label in shots:

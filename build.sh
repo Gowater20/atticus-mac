@@ -17,6 +17,7 @@ swiftc -O -target "$(uname -m)-apple-macos26.0" Atticus.swift -o "$STAGE/Atticus
 APP=~/Applications/Atticus.app   # in Applications so System Settings can list it for permissions
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/ui"
 cp atticus*.py "$APP/Contents/Resources/"
+cp -R system_one "$APP/Contents/Resources/"
 cp ui/*.html ui/*.js "$APP/Contents/Resources/ui/"
 cp ui/AppIcon.icns "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<P
@@ -39,19 +40,27 @@ cat > "$APP/Contents/Info.plist" <<P
 </dict></plist>
 P
 mv "$STAGE/Atticus" "$APP/Contents/MacOS/Atticus"
-# With a code-signing identity named "Atticus Local Signing" in the keychain, macOS keeps permissions across
+# With a code-signing identity named "Atticus Local Signing" in a persistent keychain, macOS keeps permissions across
 # rebuilds and auto-updates; ad hoc signing would ask for every permission again after each one. So make it once.
-ID=$(security find-identity -v -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
-if [ -z "$ID" ]; then
+KC=~/Library/Keychains/atticus.keychain-db
+if [ ! -f "$KC" ]; then
+  security create-keychain -p "atticus" "$KC"
+  security set-keychain-settings -lut 86400 "$KC"
   K=$(mktemp -d)
-  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=Atticus Local Signing" -addext "extendedKeyUsage=critical,codeSigning" \
-    -addext "keyUsage=critical,digitalSignature" -keyout "$K/k.pem" -out "$K/c.pem" 2>/dev/null &&
+  /usr/bin/openssl req -x509 -newkey rsa:2048 -nodes -days 7300 -subj "/CN=Atticus Local Signing" \
+    -addext "extendedKeyUsage=critical,codeSigning" -addext "keyUsage=critical,digitalSignature" \
+    -keyout "$K/k.pem" -out "$K/c.pem" 2>/dev/null &&
   /usr/bin/openssl pkcs12 -export -inkey "$K/k.pem" -in "$K/c.pem" -out "$K/a.p12" -passout pass:atticus 2>/dev/null &&
-  security import "$K/a.p12" -P atticus -T /usr/bin/codesign >/dev/null 2>&1 || true   # fails quietly: ad hoc still works
+  security import "$K/a.p12" -k "$KC" -P "atticus" -A -T /usr/bin/codesign -T /usr/bin/codesign_allocate &&
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "atticus" "$KC" >/dev/null 2>&1 || true
   rm -rf "$K"
-  ID=$(security find-identity -v -p codesigning | awk '/Atticus Local Signing/{print $2; exit}')
 fi
-codesign -s "${ID:--}" --force "$APP" 2>/dev/null || codesign -s - --force "$APP"
+security unlock-keychain -p "atticus" "$KC" 2>/dev/null || true
+CUR_KC=$(security list-keychains -d user | sed -e 's/"//g')
+if [[ "$CUR_KC" != *"$KC"* ]]; then
+  security list-keychains -d user -s "$KC" $CUR_KC
+fi
+codesign --keychain "$KC" -s "Atticus Local Signing" --force "$APP" 2>/dev/null || codesign -s - --force "$APP"
 # register with macOS, or System Settings can't list it for permissions
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 AGENT=~/Library/LaunchAgents/com.atticus.app.plist   # starts at login, restarts if it crashes (Quit stays quit)
