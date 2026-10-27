@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 Atticus i18n & Italian Language Support Module
-Provides seamless Italian NLU, command mapping, voice/speech localization and UI helpers.
+Provides seamless Italian NLU, command mapping, voice/speech localization,
+STT number normalization and UI helpers.
 Modular design to ensure upstream git pull compatibility.
 """
 
@@ -56,8 +57,41 @@ APP_ALIASES_IT = {
     'disco': 'Disk Utility',
     'utilità disco': 'Disk Utility',
     'utilita disco': 'Disk Utility',
-    'testo': 'TextEdit'
+    'testo': 'TextEdit',
+    'safari': 'Safari',
+    'chrome': 'Google Chrome',
+    'finder': 'Finder'
 }
+
+IT_NUMBERS = {
+    'zero': '0', 'un': '1', 'uno': '1', 'una': '1',
+    'due': '2', 'tre': '3', 'quattro': '4', 'cinque': '5',
+    'sei': '6', 'sette': '7', 'otto': '8', 'nove': '9',
+    'dieci': '10', 'undici': '11', 'dodici': '12', 'tredici': '13',
+    'quattordici': '14', 'quindici': '15', 'sedici': '16', 'diciassette': '17',
+    'diciotto': '18', 'diciannove': '19', 'venti': '20', 'trenta': '30'
+}
+
+def normalize_italian_numbers(text):
+    """
+    Converts Italian spelled-out numbers into digits.
+    Especially useful for speech-to-text inputs (e.g. 'tre righe' -> '3 righe').
+    """
+    if not text:
+        return text
+    
+    words = text.split()
+    out = []
+    for w in words:
+        clean = re.sub(r'[^\w]', '', w.lower())
+        if clean in IT_NUMBERS:
+            # preserve punctuation around word
+            digit = IT_NUMBERS[clean]
+            replaced = w.lower().replace(clean, digit)
+            out.append(replaced)
+        else:
+            out.append(w)
+    return " ".join(out)
 
 def resolve_app_alias(target):
     """Maps an Italian app name to its macOS English name if available."""
@@ -66,7 +100,6 @@ def resolve_app_alias(target):
     t = target.strip().lower()
     return APP_ALIASES_IT.get(t, target)
 
-# Italian verbs indicating the user wants the window/app in front
 FRONT_VERBS_IT = re.compile(
     r'\b(apri|aprimi|lancia|avvia|mostra|mostrami|porta in primo piano|porta avanti|'
     r'in primo piano|visualizza|passa a|vai a|vai su|schermo intero|tutto schermo|massimizza)\b',
@@ -98,98 +131,36 @@ def translate_fast_command(text):
     low = t.lower()
 
     # Simple conversational words
-    conversational = {
-        'grazie': 'thank you',
-        'grazie mille': 'thank you',
-        'annulla': 'cancel',
-        'niente': 'nothing',
-        'lascia stare': 'cancel',
-        'si': 'yes',
-        'sì': 'yes',
-        'certo': 'yes',
-        'va bene': 'okay',
-        'ok': 'okay'
-    }
-    if low in conversational:
-        return conversational[low]
+    if low in ('ciao', 'buongiorno', 'buonasera', 'salve', 'ehi'):
+        return 'hello'
+    if low in ('chiudi tutto', 'chiudi tutte le app', 'chiudi finestre'):
+        return 'close all'
+    if low in ('grazie', 'molte grazie', 'ti ringrazio'):
+        return 'thanks'
 
-    # Open / Launch: "apri word", "lancia safari", "avvia terminale", "apri l'app note"
-    m = re.match(r'^(?:apri(?:mi)?|lancia|avvia)(?:\s+(?:l[\'\’]|il |la |lo |gli |le |i |un |una |l\'app |l\'applicazione ))?\s*(.+)$', t, re.I)
+    # Window management translations
+    m = re.match(r'^(?:sposta\s+|metti\s+)?(.+?)\s+(?:a|in|su)\s+(sinistra|destra|tutto schermo|schermo intero|centro)(?:\s+sul?\s+(monitor|display|schermo(?:\s+esterno)?|laptop|portatile))?$', low)
     if m:
-        target = m.group(1).strip()
-        # Check window positioning suffix: es. "apri word a sinistra", "apri safari a tutto schermo"
-        m_pos = re.search(r'\s+(?:a|in|su)\s+(sinistra|destra|tutto schermo|schermo intero|centro)$', target, re.I)
-        if m_pos:
-            pos_raw = m_pos.group(1).lower()
-            app_raw = target[:m_pos.start()].strip()
-            app_resolved = resolve_app_alias(app_raw)
-            pos_map = {
-                'sinistra': 'left',
-                'destra': 'right',
-                'tutto schermo': 'full screen',
-                'schermo intero': 'full screen',
-                'centro': 'center'
-            }
-            return f"open {app_resolved} on {pos_map.get(pos_raw, 'current')}"
-        app_resolved = resolve_app_alias(target)
-        return f"open {app_resolved}"
-
-    # Close / Quit: "chiudi word", "esci da safari", "termina chrome"
-    m = re.match(r'^(?:chiudi|esci da|termina)(?:\s+(?:l[\'\’]|il |la |lo |gli |le |i |l\'app |l\'applicazione ))?\s*(.+)$', t, re.I)
-    if m:
-        app_resolved = resolve_app_alias(m.group(1).strip())
-        return f"close {app_resolved}"
-
-    # Search: "cerca ricetta tiramisu", "cerca su google meteo roma"
-    m = re.match(r'^(?:cerca(?:mi)?|trova)(?:\s+(?:su google|su internet|in rete|sul web))?(?:\s+(?:per|di))?\s+(.+)$', t, re.I)
-    if m:
-        return f"search for {m.group(1).strip()}"
-
-    # Window placement: "word a sinistra", "safari a destra", "massimizza terminale", "chrome a tutto schermo"
-    m = re.match(r'^(?:massimizza|ingrandisci)\s+(.+)$', t, re.I)
-    if m:
-        app_resolved = resolve_app_alias(m.group(1).strip())
-        return f"full screen {app_resolved}"
-
-    m = re.match(r'^(.+?)\s+(?:a|in|su)\s+(sinistra|destra|tutto schermo|schermo intero|centro)$', t, re.I)
-    if m:
-        app_raw = m.group(1).strip()
-        pos_raw = m.group(2).lower()
-        app_resolved = resolve_app_alias(app_raw)
-        pos_map = {
+        app = resolve_app_alias(m.group(1).strip())
+        where = m.group(2)
+        screen = m.group(3)
+        where_en = {
             'sinistra': 'left',
             'destra': 'right',
-            'tutto schermo': 'full screen',
-            'schermo intero': 'full screen',
+            'tutto schermo': 'full',
+            'schermo intero': 'full',
             'centro': 'center'
-        }
-        return f"{app_resolved} {pos_map.get(pos_raw, 'current')}"
+        }.get(where, 'left')
+        screen_en = 'monitor' if screen and any(k in screen for k in ('monitor', 'display', 'esterno')) else ('laptop' if screen else 'current')
+        return f"{app} {where_en} {screen_en}"
 
-    # Music / Spotify: "riproduci i coldplay", "metti musica jazz"
-    m = re.match(r'^(?:riproduci|metti|suona|ascolta)\s+(?:la canzone |il brano |la musica |il pezzo )?(.+)$', t, re.I)
-    if m:
-        return f"play {m.group(1).strip()}"
+    return t
 
-    # Learn / Remember: "ricorda come fare una riunione zoom"
-    m = re.match(r'^ricorda(?:ti)?\s+come\s+(.+)$', t, re.I)
-    if m:
-        return f"remember how to {m.group(1).strip()}"
-
-    return text
-
-def localize_reply(reply, original_text=""):
-    """Translates common standard English replies to natural Italian if user spoke Italian."""
-    if not reply or not isinstance(reply, str):
+def localize_reply(reply, orig_query=""):
+    """Translates common fast command English responses into natural Italian."""
+    if not reply or not is_italian_system():
         return reply
 
-    was_italian = asks_front_it(original_text) or any(
-        w in original_text.lower().split()
-        for w in ('apri', 'chiudi', 'cerca', 'metti', 'riproduci', 'grazie', 'ciao', 'sì', 'si', 'va', 'bene', 'terminale')
-    )
-    if not was_italian and not is_italian_system():
-        return reply
-
-    # Direct replacements for fast replies
     m = re.match(r'^Opened (.+)\.$', reply)
     if m:
         return f"Aperto {m.group(1)}."
@@ -244,4 +215,3 @@ def system_prompt_addon():
         "(es. 'Microsoft Word', 'Safari', 'Finder', 'Terminale', 'Preferenze di Sistema', 'Impostazioni'). "
         "Quando esegui comandi shell per aprire o mostrare applicazioni richieste dall'utente, portale sempre in primo piano."
     )
-

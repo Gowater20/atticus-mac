@@ -2187,17 +2187,21 @@ def fast(text):
     except Exception:
         pass
 
-    # 2. System 1 Native Automation Engine (Word, Window, System Operations)
+    # 2. System 1 Native Automation Engine with JEV Architecture (Word, Window, Finder)
     try:
         from system_one.engine import SystemOneEngine
         s1 = getattr(fast, '_s1_engine', None)
         if not s1:
             s1 = fast._s1_engine = SystemOneEngine()
-        conf, intent, params, alts = s1.analyze(text)
-        if conf >= 0.85:
+        front_app = os.environ.get('ATTICUS_FRONT')
+        conf, intent, params, alts = s1.analyze(text, frontmost_app=front_app)
+        if conf >= 0.80 and intent != "disambiguation" and intent != "ask_gemini":
             ok, rep = s1.execute(intent, params, prompt=orig_text)
             if ok:
                 return rep
+        elif intent == "disambiguation" and alts:
+            opt_lines = "\n".join([f"[{i+1}] {a.get('label', '')}" for i, a in enumerate(alts)])
+            return f"Cosa intendi fare?\n{opt_lines}\n(Rispondi 'uno', 'due' o 'tre')"
     except Exception:
         pass
 

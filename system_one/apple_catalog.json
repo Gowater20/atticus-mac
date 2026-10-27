@@ -1,5 +1,5 @@
 {
-  "version": "1.0",
+  "version": "2.0",
   "apps": {
     "word": {
       "name": "Microsoft Word",
@@ -7,70 +7,150 @@
       "actions": {
         "create_document": {
           "description": "Crea nuovo documento con titolo e testo corpo formattati",
+          "risk_level": "low",
           "triggers_it": [
-            "apri file vuoto", "nuovo documento word", "crea documento word", "scrivi su word", "crea un file word"
+            "apri file vuoto", "nuovo documento word", "crea documento word", "scrivi su word", "crea un file word", "apri word vuoto"
           ],
+          "keywords": ["word", "documento", "file", "vuoto", "nuovo", "crea", "scrivi"],
           "parameters": {
             "title": {"type": "string", "default": ""},
             "title_bold": {"type": "boolean", "default": true},
             "title_size": {"type": "integer", "default": 20},
             "body": {"type": "string", "default": ""},
-            "body_size": {"type": "integer", "default": 12}
-          }
+            "body_size": {"type": "integer", "default": 12},
+            "keyword": {"type": "string", "default": ""},
+            "kw_bold": {"type": "boolean", "default": false},
+            "kw_hl": {"type": "string", "default": "none"}
+          },
+          "rollback_strategy": "close_created_doc_verified"
+        },
+        "insert_title": {
+          "description": "Inserisce un titolo formattato nel documento Word attivo",
+          "risk_level": "medium",
+          "triggers_it": [
+            "inserisci titolo", "scrivi titolo", "aggiungi titolo", "titolo in grassetto"
+          ],
+          "keywords": ["titolo", "intestazione", "header", "scrivi", "inserisci"],
+          "parameters": {
+            "title": {"type": "string", "required": true},
+            "title_bold": {"type": "boolean", "default": true},
+            "title_size": {"type": "integer", "default": 20}
+          },
+          "rollback_strategy": "word_undo"
         },
         "format_keyword": {
           "description": "Evidenzia o formatta in grassetto parole chiave nel documento",
+          "risk_level": "medium",
           "triggers_it": [
-            "metti in grassetto la parola", "evidenzia la parola", "evidenzia", "grassetto su"
+            "metti in grassetto la parola", "evidenzia la parola", "evidenzia", "grassetto su", "formattami la parola", "grassetto la parola"
           ],
+          "keywords": ["grassetto", "evidenzia", "parola", "termine", "formatta", "giallo"],
           "parameters": {
             "keyword": {"type": "string", "required": true},
             "bold": {"type": "boolean", "default": false},
             "highlight": {"type": "string", "default": "yellow"}
-          }
+          },
+          "rollback_strategy": "word_undo"
         },
         "save_document": {
           "description": "Salva il documento attivo in formato docx o esporta in pdf",
+          "risk_level": "high",
           "triggers_it": [
-            "salva documento", "salva come", "esporta in pdf", "salva word"
+            "salva documento", "salva come", "esporta in pdf", "salva word", "salvalo in pdf", "salvalo sul desktop"
           ],
+          "keywords": ["salva", "salvalo", "esporta", "pdf", "docx", "desktop"],
           "parameters": {
             "path": {"type": "string", "default": "~/Desktop/documento.docx"},
             "as_pdf": {"type": "boolean", "default": false}
-          }
+          },
+          "rollback_strategy": "manual_confirm"
         },
         "close_document": {
           "description": "Chiude il documento attivo (salvando o scartando)",
+          "risk_level": "high",
           "triggers_it": [
-            "chiudi documento", "chiudi senza salvare", "annulla documento"
+            "chiudi documento", "chiudi senza salvare", "annulla documento", "chiudi word"
           ],
+          "keywords": ["chiudi", "documento", "word", "senza salvare"],
           "parameters": {
             "saving": {"type": "boolean", "default": false}
-          }
+          },
+          "rollback_strategy": "none"
         }
       }
     },
     "window": {
       "name": "Window Management",
+      "bundle_id": "com.apple.systemevents",
       "actions": {
         "snap_left": {
-          "triggers_it": ["a sinistra", "metti a sinistra", "sposta a sinistra"],
-          "where": "left"
+          "description": "Posiziona la finestra a sinistra",
+          "risk_level": "low",
+          "triggers_it": ["a sinistra", "metti a sinistra", "sposta a sinistra", "finestra a sinistra"],
+          "keywords": ["sinistra", "sposta", "metti", "finestra"],
+          "where": "left",
+          "rollback_strategy": "restore_window_bounds"
         },
         "snap_right": {
-          "triggers_it": ["a destra", "metti a destra", "sposta a destra"],
-          "where": "right"
+          "description": "Posiziona la finestra a destra",
+          "risk_level": "low",
+          "triggers_it": ["a destra", "metti a destra", "sposta a destra", "finestra a destra"],
+          "keywords": ["destra", "sposta", "metti", "finestra"],
+          "where": "right",
+          "rollback_strategy": "restore_window_bounds"
         },
         "maximize": {
-          "triggers_it": ["a tutto schermo", "schermo intero", "massimizza", "ingrandisci"],
-          "where": "full"
+          "description": "Massimizza la finestra",
+          "risk_level": "low",
+          "triggers_it": ["a tutto schermo", "schermo intero", "massimizza", "ingrandisci finestra"],
+          "keywords": ["tutto schermo", "schermo intero", "massimizza", "ingrandisci", "full"],
+          "where": "full",
+          "rollback_strategy": "restore_window_bounds"
         },
         "center": {
-          "triggers_it": ["al centro", "centra", "in mezzo"],
-          "where": "center"
+          "description": "Centra la finestra sullo schermo",
+          "risk_level": "low",
+          "triggers_it": ["al centro", "centra", "in mezzo", "centra finestra"],
+          "keywords": ["centro", "centra", "mezzo"],
+          "where": "center",
+          "rollback_strategy": "restore_window_bounds"
+        },
+        "window_split": {
+          "description": "Affianca due finestre a sinistra e a destra",
+          "risk_level": "low",
+          "triggers_it": ["affianca finestre", "dividi schermo", "split finestre", "metti finestre affiancate", "organizza finestre"],
+          "keywords": ["affianca", "dividi", "split", "finestre", "organizza"],
+          "where": "split",
+          "rollback_strategy": "restore_window_bounds"
+        }
+      }
+    },
+    "finder": {
+      "name": "Finder",
+      "bundle_id": "com.apple.finder",
+      "actions": {
+        "create_folder": {
+          "description": "Crea una nuova cartella sul Desktop o nel percorso specificato",
+          "risk_level": "medium",
+          "triggers_it": ["crea cartella", "nuova cartella", "fai una cartella"],
+          "keywords": ["cartella", "crea", "nuova", "directory"],
+          "parameters": {
+            "name": {"type": "string", "default": "Nuova Cartella"},
+            "path": {"type": "string", "default": "~/Desktop"}
+          },
+          "rollback_strategy": "delete_if_empty"
+        },
+        "reveal_item": {
+          "description": "Mostra un elemento nel Finder",
+          "risk_level": "low",
+          "triggers_it": ["mostra nel finder", "apri cartella", "mostra file"],
+          "keywords": ["mostra", "finder", "apri", "rivela"],
+          "parameters": {
+            "path": {"type": "string", "required": true}
+          },
+          "rollback_strategy": "none"
         }
       }
     }
   }
 }
-
