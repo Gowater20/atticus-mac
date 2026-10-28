@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
 Atticus Feedback & Rollback Manager (Continuous Learning / Negative Feedback)
-Tracks recent actions within a Grace Period (5.0 seconds).
-Handles surgical, non-destructive rollbacks, confidence decay in skills.json,
-and IPC state management for pending disambiguation choices (pending_choice.json).
+Tracks recent actions with indefinite undo persistence until superseded or cleared.
+Handles surgical, non-destructive rollbacks, confidence decay and reinforcement in skills.json,
+IPC state management for pending disambiguation choices (pending_choice.json),
+and fast-path user corrections (user_corrections.json / corrections_dataset.jsonl).
 """
 
 import os
@@ -13,11 +14,14 @@ import json
 import re
 import subprocess
 
-CONFIG_DIR = os.path.expanduser("~/.config/atticus")
+CONFIG_DIR = os.environ.get("ATTICUS_DIR") or os.path.expanduser("~/.config/atticus")
 LAST_ACTION_PATH = os.path.join(CONFIG_DIR, "last_action.json")
 PENDING_CHOICE_PATH = os.path.join(CONFIG_DIR, "pending_choice.json")
 SKILLS_PATH = os.path.join(CONFIG_DIR, "skills.json")
-DEFAULT_GRACE_PERIOD = 5.0  # seconds
+USER_CORRECTIONS_FILE = os.path.join(CONFIG_DIR, "user_corrections.json")
+CORRECTIONS_DATASET_FILE = os.path.join(CONFIG_DIR, "corrections_dataset.jsonl")
+
+DEFAULT_GRACE_PERIOD = 5.0  # seconds (legacy fallback)
 DEFAULT_PENDING_TTL = 25.0  # seconds
 
 NEGATIVE_TRIGGERS = {
@@ -26,6 +30,91 @@ NEGATIVE_TRIGGERS = {
     'fermati', 'torna indietro', 'cancella', 'cancella azione',
     'undo', 'cancel', 'stop', 'wrong', 'nevermind', 'never mind'
 }
+
+# --- Cache and Path Resolution Helpers ---
+
+_USER_CORRECTIONS_CACHE = {}
+_CACHE_LOADED = False
+_CACHE_DIR = None
+_CACHE_MTIME = 0.0
+
+
+def _get_cfg_dir():
+    return getattr(sys.modules[__name__], "CONFIG_DIR", CONFIG_DIR)
+
+
+def _get_user_corrections_path():
+    cfg = _get_cfg_dir()
+    return os.path.join(cfg, "user_corrections.json")
+
+
+def _get_corrections_dataset_path():
+    cfg = _get_cfg_dir()
+    return os.path.join(cfg, "corrections_dataset.jsonl")
+
+
+def _get_skills_path():
+    cfg = _get_cfg_dir()
+    s_path = getattr(sys.modules[__name__], "SKILLS_PATH", None)
+    if not s_path or (cfg != CONFIG_DIR and os.path.dirname(s_path) != cfg):
+        s_path = os.path.join(cfg, "skills.json")
+    return s_path
+
+
+def _get_last_action_path():
+    cfg = _get_cfg_dir()
+    last_path = getattr(sys.modules[__name__], "LAST_ACTION_PATH", None)
+    if not last_path or (cfg != CONFIG_DIR and os.path.dirname(last_path) != cfg):
+        last_path = os.path.join(cfg, "last_action.json")
+    return last_path
+
+
+def _get_pending_choice_path():
+    cfg = _get_cfg_dir()
+    p_path = getattr(sys.modules[__name__], "PENDING_CHOICE_PATH", None)
+    if not p_path or (cfg != CONFIG_DIR and os.path.dirname(p_path) != cfg):
+        p_path = os.path.join(cfg, "pending_choice.json")
+    return p_path
+
+
+def _normalize_prompt(prompt):
+    """Normalizes prompt: spoken numbers to digits, lowercase, trimmed punctuation and whitespaces."""
+    if not prompt:
+        return ""
+    try:
+        import atticus_i18n
+        p = atticus_i18n.normalize_italian_numbers(str(prompt))
+    except Exception:
+        p = str(prompt)
+    p = p.strip().lower()
+    p = re.sub(r'^[,\.\s!?]+|[,\.\s!?]+$', '', p)
+    p = re.sub(r'\s+', ' ', p)
+    return p
+
+
+def _ensure_cache_loaded():
+    global _USER_CORRECTIONS_CACHE, _CACHE_LOADED, _CACHE_DIR, _CACHE_MTIME
+    cfg = _get_cfg_dir()
+    path = _get_user_corrections_path()
+
+    if not _CACHE_LOADED or _CACHE_DIR != cfg:
+        _USER_CORRECTIONS_CACHE = {}
+        _CACHE_DIR = cfg
+        _CACHE_LOADED = True
+        _CACHE_MTIME = 0.0
+
+    if os.path.exists(path):
+        try:
+            mtime = os.path.getmtime(path)
+            if mtime != _CACHE_MTIME:
+                with open(path, "r", encoding="utf-8") as f:
+                    _USER_CORRECTIONS_CACHE = json.load(f)
+                _CACHE_MTIME = mtime
+        except Exception:
+            _USER_CORRECTIONS_CACHE = {}
+    else:
+        _USER_CORRECTIONS_CACHE = {}
+        _CACHE_MTIME = 0.0
 
 
 def is_negative_trigger(text):
@@ -43,7 +132,8 @@ def is_negative_trigger(text):
 
 def save_pending_choice(original_query, options, front_app="", ttl=DEFAULT_PENDING_TTL):
     """Saves pending disambiguation card choices with a TTL."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    cfg = _get_cfg_dir()
+    os.makedirs(cfg, exist_ok=True)
     payload = {
         "created_at": time.time(),
         "ttl_seconds": ttl,
@@ -51,21 +141,23 @@ def save_pending_choice(original_query, options, front_app="", ttl=DEFAULT_PENDI
         "front_app": front_app,
         "options": options or []
     }
-    tmp_path = PENDING_CHOICE_PATH + ".tmp"
+    p_path = _get_pending_choice_path()
+    tmp_path = p_path + ".tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        os.replace(tmp_path, PENDING_CHOICE_PATH)
+        os.replace(tmp_path, p_path)
     except Exception as e:
         print(f"[Feedback] Errore salvataggio pending_choice: {e}", file=sys.stderr)
 
 
 def get_pending_choice(max_age=DEFAULT_PENDING_TTL):
     """Retrieves pending choice if within its TTL."""
-    if not os.path.exists(PENDING_CHOICE_PATH):
+    p_path = _get_pending_choice_path()
+    if not os.path.exists(p_path):
         return None
     try:
-        with open(PENDING_CHOICE_PATH, "r", encoding="utf-8") as f:
+        with open(p_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         elapsed = time.time() - data.get("created_at", 0)
         ttl = data.get("ttl_seconds", max_age)
@@ -80,8 +172,9 @@ def get_pending_choice(max_age=DEFAULT_PENDING_TTL):
 def clear_pending_choice():
     """Removes pending choice file."""
     try:
-        if os.path.exists(PENDING_CHOICE_PATH):
-            os.remove(PENDING_CHOICE_PATH)
+        p_path = _get_pending_choice_path()
+        if os.path.exists(p_path):
+            os.remove(p_path)
     except Exception:
         pass
 
@@ -91,6 +184,7 @@ def resolve_pending_choice(text):
     Checks if text is a selection for an active pending choice:
     e.g. 'uno', '1', 'prima', 'due', '2', 'seconda', 'tre', '3', 'terza', 'gemini'.
     Returns (resolved: bool, choice_dict_or_action: dict or None).
+    Saves user correction on selection to user_corrections.json and corrections_dataset.jsonl.
     """
     pending = get_pending_choice()
     if not pending:
@@ -112,17 +206,43 @@ def resolve_pending_choice(text):
 
     if choice_idx is not None and choice_idx < len(options):
         selected = options[choice_idx]
+        original_query = pending.get("original_query", "")
+        chosen_intent = selected.get("action_id", "")
+        extracted_params = selected.get("extracted_params", {})
+
+        if original_query and chosen_intent:
+            save_user_correction(
+                prompt=original_query,
+                intent=chosen_intent,
+                source="disambiguation_card",
+                rejected_intent=None,
+                params=extracted_params
+            )
+
         clear_pending_choice()
         return True, selected
 
     return False, None
 
 
-# --- 2. Grace Period & Last Action Tracking ---
+# --- 2. Action Tracking (Indefinite Undo Persistence) ---
 
 def record_action(prompt, action_type, executed_cmds=None, rollback_cmd=None, skill_key=None, metadata=None):
-    """Saves the last executed action to disk for grace-period tracking."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    """
+    Saves the last executed action to disk.
+    If there was a previous action, consolidates (reinforces) the previous skill
+    before overwriting. Action remains undoable until superseded or cleared.
+    """
+    cfg = _get_cfg_dir()
+    os.makedirs(cfg, exist_ok=True)
+
+    # 1. Consolidate previous action if present
+    prev = get_last_action()
+    if prev:
+        prev_skill = prev.get("skill_key") or prev.get("prompt")
+        if prev_skill:
+            reinforce_skill(prev_skill)
+
     payload = {
         "timestamp": time.time(),
         "prompt": prompt,
@@ -132,26 +252,33 @@ def record_action(prompt, action_type, executed_cmds=None, rollback_cmd=None, sk
         "skill_key": skill_key or "",
         "metadata": metadata or {}
     }
-    tmp_path = LAST_ACTION_PATH + ".tmp"
+    last_path = _get_last_action_path()
+    tmp_path = last_path + ".tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
-        os.replace(tmp_path, LAST_ACTION_PATH)
+        os.replace(tmp_path, last_path)
     except Exception as e:
         print(f"[Feedback] Errore salvataggio last_action: {e}", file=sys.stderr)
 
 
-def get_last_action(max_age=DEFAULT_GRACE_PERIOD):
-    """Retrieves the last action if within the grace period."""
-    if not os.path.exists(LAST_ACTION_PATH):
+def get_last_action(max_age=None):
+    """
+    Retrieves the last action. Action remains cancelable indefinitely
+    until clear_last_action() / handle_annulla() is called, or until a new
+    action is recorded with record_action() (which consolidates and overwrites it).
+    """
+    last_path = _get_last_action_path()
+    if not os.path.exists(last_path):
         return None
     try:
-        with open(LAST_ACTION_PATH, "r", encoding="utf-8") as f:
+        with open(last_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         elapsed = time.time() - data.get("timestamp", 0)
-        if elapsed <= max_age:
-            data["elapsed"] = elapsed
-            return data
+        data["elapsed"] = elapsed
+        if max_age is not None and elapsed > max_age:
+            return None
+        return data
     except Exception:
         pass
     return None
@@ -160,23 +287,102 @@ def get_last_action(max_age=DEFAULT_GRACE_PERIOD):
 def clear_last_action():
     """Clears the last action file."""
     try:
-        if os.path.exists(LAST_ACTION_PATH):
-            os.remove(LAST_ACTION_PATH)
+        last_path = _get_last_action_path()
+        if os.path.exists(last_path):
+            os.remove(last_path)
     except Exception:
         pass
 
 
-# --- 3. Continuous Learning: Confidence Decay vs Reinforcement ---
+# --- 3. Fast-Path User Corrections (0ms Cache & Dataset Append) ---
+
+def get_user_correction(prompt):
+    """
+    Retrieves user correction for prompt with 0ms in-memory cache lookup.
+    Returns dict with correction details (intent, params, etc.) or None.
+    """
+    if not prompt:
+        return None
+    norm = _normalize_prompt(prompt)
+    if not norm:
+        return None
+    _ensure_cache_loaded()
+    return _USER_CORRECTIONS_CACHE.get(norm)
+
+
+def save_user_correction(prompt, intent, source="disambiguation_card", rejected_intent=None, params=None):
+    """
+    Saves a user correction with atomic write (.tmp + os.replace) to user_corrections.json
+    and append to corrections_dataset.jsonl. Updates in-memory cache.
+    """
+    if not prompt or not intent:
+        return False
+
+    norm = _normalize_prompt(prompt)
+    if not norm:
+        return False
+
+    cfg = _get_cfg_dir()
+    os.makedirs(cfg, exist_ok=True)
+
+    now = time.time()
+    entry = {
+        "intent": intent,
+        "params": params or {},
+        "source": source,
+        "rejected_intent": rejected_intent,
+        "timestamp": now,
+        "raw_prompt": prompt
+    }
+
+    _ensure_cache_loaded()
+    _USER_CORRECTIONS_CACHE[norm] = entry
+
+    # 1. Atomic write to user_corrections.json
+    corr_path = _get_user_corrections_path()
+    tmp_path = corr_path + ".tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(_USER_CORRECTIONS_CACHE, f, indent=2, ensure_ascii=False)
+        os.replace(tmp_path, corr_path)
+        global _CACHE_MTIME
+        _CACHE_MTIME = os.path.getmtime(corr_path)
+    except Exception as e:
+        print(f"[Feedback] Errore salvataggio user_corrections: {e}", file=sys.stderr)
+        return False
+
+    # 2. Append to corrections_dataset.jsonl
+    dataset_path = _get_corrections_dataset_path()
+    dataset_entry = {
+        "prompt": prompt,
+        "normalized_prompt": norm,
+        "intent": intent,
+        "params": params or {},
+        "source": source,
+        "rejected_intent": rejected_intent,
+        "timestamp": now
+    }
+    try:
+        with open(dataset_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(dataset_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"[Feedback] Errore append corrections_dataset: {e}", file=sys.stderr)
+
+    return True
+
+
+# --- 4. Continuous Learning: Confidence Decay vs Reinforcement ---
 
 def decay_skill(skill_key, factor=0.65):
     """
     Applies exponential decay to a skill instead of hard deletion.
     If confidence < 0.35, sets status to 'quarantined'.
     """
-    if not skill_key or not os.path.exists(SKILLS_PATH):
+    skills_path = _get_skills_path()
+    if not skill_key or not os.path.exists(skills_path):
         return False
     try:
-        with open(SKILLS_PATH, "r", encoding="utf-8") as f:
+        with open(skills_path, "r", encoding="utf-8") as f:
             skills = json.load(f)
 
         k_clean = skill_key.strip().lower()
@@ -193,15 +399,14 @@ def decay_skill(skill_key, factor=0.65):
                         v["status"] = "quarantined"
                     v["last_modified"] = time.time()
                 else:
-                    # Legacy string shortcut: remove or convert
                     del skills[k]
                 modified = True
 
         if modified:
-            tmp = SKILLS_PATH + ".tmp"
+            tmp = skills_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(skills, f, indent=2)
-            os.replace(tmp, SKILLS_PATH)
+            os.replace(tmp, skills_path)
             print(f"[Feedback] Skill '{skill_key}' penalizzata con decay ({factor}) in skills.json", file=sys.stderr)
         return modified
     except Exception as e:
@@ -211,10 +416,11 @@ def decay_skill(skill_key, factor=0.65):
 
 def reinforce_skill(skill_key):
     """Increases confidence of a successfully executed skill."""
-    if not skill_key or not os.path.exists(SKILLS_PATH):
+    skills_path = _get_skills_path()
+    if not skill_key or not os.path.exists(skills_path):
         return False
     try:
-        with open(SKILLS_PATH, "r", encoding="utf-8") as f:
+        with open(skills_path, "r", encoding="utf-8") as f:
             skills = json.load(f)
 
         k_clean = skill_key.strip().lower()
@@ -231,20 +437,20 @@ def reinforce_skill(skill_key):
                 modified = True
 
         if modified:
-            tmp = SKILLS_PATH + ".tmp"
+            tmp = skills_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(skills, f, indent=2)
-            os.replace(tmp, SKILLS_PATH)
+            os.replace(tmp, skills_path)
         return modified
     except Exception:
         return False
 
 
-# --- 4. Rollback Execution (Surgical & Non-Destructive) ---
+# --- 5. Rollback Execution (Surgical & Non-Destructive) ---
 
 def handle_annulla():
     """
-    Executes a surgical rollback if an action is within the grace period.
+    Executes a surgical rollback of the last action.
     Returns (True, message) or (False, None).
     """
     last = get_last_action()

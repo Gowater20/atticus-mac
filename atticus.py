@@ -2177,6 +2177,12 @@ def fast(text):
     fast.shortcut = fast.failed = None
     orig_text = text
 
+    t_plain = plain(text)
+    if t_plain in ('report feedback', 'report a bug'):
+        if os.environ.get('ATTICUS_LIVE') == '1': return None
+        say('!', 'feedback')
+        return 'Review your feedback before opening GitHub.'
+
     # 1. Continuous Learning / Negative Feedback Trigger (Rollback)
     try:
         import atticus_feedback
@@ -2195,6 +2201,8 @@ def fast(text):
             s1 = fast._s1_engine = SystemOneEngine()
         front_app = os.environ.get('ATTICUS_FRONT')
         conf, intent, params, alts = s1.analyze(text, frontmost_app=front_app)
+        if intent == "error_rizzo_offline":
+            return params.get("message", "Rizzo Flow non è attivo sulla porta 8017. Avvia il server per eseguire i comandi")
         if conf >= 0.80 and intent != "disambiguation" and intent != "ask_gemini":
             ok, rep = s1.execute(intent, params, prompt=orig_text)
             if ok:

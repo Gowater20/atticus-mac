@@ -4,6 +4,7 @@ System 1 Decision Engine with JEV Architecture (Judge - Evaluator - Verifier)
 Calculates Joint Expected Value: JEV(a) = P(a)*U_fast - (1-P(a))*C_risk(a).
 Provides context-aware semantic parsing, multi-turn state, safe execution,
 and continuous learning feedback loop.
+Supports both neural probability scoring via Rizzo Flow and heuristic rule-based JEV.
 """
 
 import os
@@ -54,13 +55,212 @@ class SystemOneEngine:
         except Exception:
             return {}
 
+    def _load_settings(self):
+        """Loads settings from config directory with test isolation support."""
+        cfg_dir = getattr(atticus_feedback, "CONFIG_DIR", None)
+        std_dir = os.path.expanduser("~/.config/atticus")
+        if cfg_dir and os.path.abspath(cfg_dir) != os.path.abspath(std_dir):
+            test_settings = os.path.join(cfg_dir, "settings.json")
+            if os.path.exists(test_settings):
+                try:
+                    with open(test_settings, "r", encoding="utf-8") as f:
+                        return json.load(f)
+                except Exception:
+                    pass
+            return {}
+        settings_path = os.path.join(std_dir, "settings.json")
+        if os.path.exists(settings_path):
+            try:
+                with open(settings_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass
+        return {}
+
+    def _map_action_to_intent_and_risk(self, act_key: str):
+        k = act_key.lower()
+        if "create_document" in k or "create_and_format" in k or k == "word_create":
+            return "word_create_and_format", "low"
+        if "insert_title" in k:
+            return "word_create_and_format", "medium"
+        if "format_keyword" in k:
+            return "word_format_keyword", "medium"
+        if "save" in k:
+            return "word_save", "high"
+        if "close" in k:
+            return "word_close", "high"
+
+        if "snap_left" in k:
+            return "window_place", "low"
+        if "snap_right" in k:
+            return "window_place", "low"
+        if "maximize" in k:
+            return "window_place", "low"
+        if "center" in k:
+            return "window_place", "low"
+        if "window_place" in k:
+            return "window_place", "low"
+        if "split" in k:
+            return "window_split", "low"
+
+        if "create_folder" in k:
+            return "finder_create_folder", "medium"
+        if "reveal" in k:
+            return "finder_reveal_item", "low"
+
+        return k, "medium"
+
+    def _extract_params_for_intent(self, intent, norm_text, action_key=None, frontmost_app=None):
+        t = norm_text.lower()
+
+        if intent == "word_create_and_format":
+            title = ""
+            body = ""
+            keyword = ""
+            kw_bold = False
+            kw_hl = "none"
+
+            m_title = re.search(
+                r'titolo\s+(?:con\s+|di\s+|[\'"]?)([^\,\;\n]+?)(?:[\'"]|\s+in grassetto|\s+grassetto|\,\s*scrivi|\s+scrivi|\,\s*con|$)',
+                norm_text,
+                re.IGNORECASE
+            )
+            if m_title:
+                title = m_title.group(1).strip().strip('\'"')
+
+            if "lorem ipsum" in t:
+                m_lines = re.search(r'(\d+)\s*(?:righe|righi|paragrafi|frasi)', t)
+                if m_lines and int(m_lines.group(1)) <= 1:
+                    body = LOREM_IPSUM_1
+                else:
+                    body = LOREM_IPSUM_3
+            else:
+                m_body = re.search(r'scrivi\s+(?:il\s+testo\s+|un\s+testo\s+|[\'"]?)([^\,\;]+)', norm_text, re.IGNORECASE)
+                if m_body:
+                    body = m_body.group(1).strip().strip('\'"')
+
+            m_kw = re.search(r'(?:evidenzia|metti in grassetto|grassetto su)(?:\s+(?:in grassetto|la parola|il termine|la|il|lo|gli|le))*\s+[\'\"“]?([a-zA-Z0-9_\-]+)', norm_text, re.IGNORECASE)
+            if m_kw:
+                keyword = m_kw.group(1).strip().strip('\'"“')
+                kw_bold = "grassetto" in t[m_kw.start():] or "evidenzia in grassetto" in t
+                kw_hl = "yellow" if "evidenzia" in t else "none"
+
+            return {
+                "title": title or "Documento",
+                "title_bold": True,
+                "title_size": 20,
+                "body": body,
+                "body_size": 12,
+                "keyword": keyword,
+                "kw_bold": kw_bold,
+                "kw_hl": kw_hl
+            }
+
+        elif intent == "word_format_keyword":
+            m_format_only = re.search(r'(?:metti in grassetto|evidenzia|grassetto su)(?:\s+(?:la parola|il termine|la|il|lo|gli|le))*\s+[\'\"“]?([a-zA-Z0-9_\-]+)', norm_text, re.IGNORECASE)
+            kw = m_format_only.group(1).strip().strip('\'"“') if m_format_only else ""
+            return {"keyword": kw, "bold": "grassetto" in t, "highlight": "yellow" if "evidenzia" in t else "none"}
+
+        elif intent == "word_save":
+            as_pdf = "pdf" in t
+            file_name = "documento.pdf" if as_pdf else "documento.docx"
+            return {"path": f"~/Desktop/{file_name}", "as_pdf": as_pdf}
+
+        elif intent == "word_close":
+            saving = "salvando" in t and "senza" not in t
+            return {"saving": saving}
+
+        elif intent == "window_place":
+            where = "left"
+            if action_key:
+                ak = action_key.lower()
+                if "left" in ak or "sinistra" in ak:
+                    where = "left"
+                elif "right" in ak or "destra" in ak:
+                    where = "right"
+                elif "maximize" in ak or "tutto" in ak or "full" in ak:
+                    where = "full"
+                elif "center" in ak or "centro" in ak:
+                    where = "center"
+            else:
+                if "destra" in t:
+                    where = "right"
+                elif "sinistra" in t:
+                    where = "left"
+                elif "tutto schermo" in t or "massimizza" in t or "schermo intero" in t:
+                    where = "full"
+                elif "centro" in t:
+                    where = "center"
+
+            m_win = re.match(r'^(?:sposta\s+|metti\s+)?(.+?)\s+(?:a|in|su)\s+(sinistra|destra|tutto schermo|schermo intero|centro)$', t)
+            app = m_win.group(1).strip() if m_win else (frontmost_app or "current")
+            return {"app": app, "where": where}
+
+        elif intent == "window_split":
+            return {"left": "Microsoft Word", "right": "Safari"}
+
+        elif intent == "finder_create_folder":
+            m_folder = re.search(
+                r'\b(?:crea|fai|nuova)\s+cartella(?:\s+(?:chiamata|di nome|intitolata|[\'"]))?\s*([a-zA-Z0-9_\-\s]+)?',
+                norm_text,
+                re.IGNORECASE
+            )
+            f_name = (m_folder.group(1) or "Nuova Cartella").strip().strip('\'"') if m_folder else "Nuova Cartella"
+            return {"name": f_name or "Nuova Cartella", "path": "~/Desktop"}
+
+        return {}
+
+    def _get_action_label(self, intent, params):
+        if intent == "window_split":
+            return "Affianca finestre (Word a sinistra, Safari a destra)"
+        if intent == "window_place":
+            where = params.get("where", "sinistra")
+            app = params.get("app", "finestra")
+            where_it = {"left": "a sinistra", "right": "a destra", "full": "a tutto schermo", "center": "al centro"}.get(where, where)
+            return f"Sposta {app} ({where_it})"
+        if intent == "word_create_and_format":
+            title = params.get("title", "")
+            return f"Crea nuovo documento vuoto su Word{f' ({title})' if title else ''}"
+        if intent == "word_save":
+            as_pdf = params.get("as_pdf", False)
+            return f"Salva documento Word {'in PDF' if as_pdf else ''}".strip()
+        if intent == "finder_create_folder":
+            name = params.get("name", "cartella")
+            return f"Crea cartella '{name}' sul Desktop"
+        return intent
+
+    def _build_alternatives_from_candidates(self, candidates, norm_text, frontmost_app=None):
+        alts = []
+        for i, c in enumerate(candidates, 1):
+            intent = c["intent"]
+            params = self._extract_params_for_intent(intent, norm_text, action_key=c["action_key"], frontmost_app=frontmost_app)
+            label = self._get_action_label(intent, params)
+            alts.append({
+                "choice_id": i,
+                "action_id": intent,
+                "label": label,
+                "extracted_params": params,
+                "jev_score": c["jev_score"]
+            })
+        if len(alts) < 3:
+            alts.append({
+                "choice_id": len(alts) + 1,
+                "action_id": "system2.gemini",
+                "label": "Chiedi a Gemini (analisi avanzata)",
+                "extracted_params": {"query": norm_text},
+                "jev_score": 1.0
+            })
+        return alts
+
     def analyze(self, text, frontmost_app=None):
         """
         JEV Pipeline:
         1. Checks for active pending_choice resolution (1, 2, 3 / uno, due, tre).
-        2. Stage 1: JUDGE - Token matching, slot filling, context boost.
-        3. Stage 2: EVALUATOR - JEV formula & risk weighting.
-        4. Returns (confidence: float, intent: str, params: dict, alternatives: list)
+        2. Fast-Path: checks learned user_corrections (0ms).
+        3. If useRizzoFlow is True: queries Rizzo Flow server (POST /v1/systemone, 250ms timeout)
+           and calculates JEV based on neural probabilities.
+           If server is offline/times out: returns confidence 1.0, intent="error_rizzo_offline".
+        4. If useRizzoFlow is False: evaluates rule-based Judge and JEV.
         """
         if not text:
             return 0.0, "none", {}, []
@@ -76,12 +276,79 @@ class SystemOneEngine:
                 return 0.20, "ask_gemini", {"query": choice.get("extracted_params", {}).get("query", text)}, []
             return 0.99, action_id, choice.get("extracted_params", {}), []
 
+        # Step 0.5: Fast-Path on user_corrections via get_user_correction(norm_text)
+        corr = atticus_feedback.get_user_correction(norm_text)
+        if corr:
+            intent = corr.get("intent") if isinstance(corr, dict) else corr
+            params = corr.get("params", {}) if isinstance(corr, dict) else {}
+            if not params:
+                params = self._extract_params_for_intent(intent, norm_text, frontmost_app=frontmost_app)
+            return 1.0, intent, params, []
+
         # Context detection
         explicit_front_passed = frontmost_app is not None
         if not frontmost_app:
             frontmost_app = get_frontmost_app()
         session_ctx = get_session_context()
 
+        # Step 1: Check Settings for useRizzoFlow
+        settings = self._load_settings()
+        use_rizzo = settings.get("useRizzoFlow", False)
+
+        if use_rizzo:
+            from .rizzo_client import query_rizzo_intent
+            endpoint = settings.get("rizzoFlowUrl", "http://127.0.0.1:8017").rstrip("/") + "/v1/systemone"
+            try:
+                probs = query_rizzo_intent(
+                    prompt=norm_text,
+                    catalog=self.catalog,
+                    context={"frontmost_app": frontmost_app},
+                    endpoint=endpoint,
+                    timeout=0.25
+                )
+                if not probs or not isinstance(probs, dict):
+                    raise RuntimeError("Rizzo Flow returned invalid probabilities")
+            except Exception:
+                return 1.0, "error_rizzo_offline", {
+                    "message": "Rizzo Flow non è attivo sulla porta 8017. Avvia il server per eseguire i comandi"
+                }, []
+
+            # Rizzo Flow Neural JEV scoring: JEV(a) = P(a)*1.0 - (1 - P(a))*C_risk
+            candidates = []
+            for act_key, p_score in probs.items():
+                if p_score <= 0.0:
+                    continue
+                canonical_intent, risk_level = self._map_action_to_intent_and_risk(act_key)
+                jev = self._calc_jev(p_score, risk_level)
+                candidates.append({
+                    "action_key": act_key,
+                    "intent": canonical_intent,
+                    "p_score": p_score,
+                    "risk_level": risk_level,
+                    "jev_score": jev
+                })
+
+            if not candidates:
+                return 0.20, "ask_gemini", {"query": text}, []
+
+            candidates.sort(key=lambda x: x["jev_score"], reverse=True)
+            top = candidates[0]
+            top_intent = top["intent"]
+            top_jev = top["jev_score"]
+            top_risk = top["risk_level"]
+
+            threshold = EXEC_THRESHOLDS.get(top_risk, 0.80)
+            if top_jev >= threshold:
+                params = self._extract_params_for_intent(top_intent, norm_text, action_key=top["action_key"], frontmost_app=frontmost_app)
+                return top_jev, top_intent, params, []
+            elif top_jev >= DISAMB_THRESHOLDS.get(top_risk, 0.40):
+                alts = self._build_alternatives_from_candidates(candidates[:3], norm_text, frontmost_app=frontmost_app)
+                atticus_feedback.save_pending_choice(text, alts, front_app=frontmost_app)
+                return top_jev, "disambiguation", {}, alts
+            else:
+                return 0.20, "ask_gemini", {"query": text}, []
+
+        # Step 2: Rule-Based Judge & JEV Evaluator (when useRizzoFlow is False)
         front_is_word = "word" in (frontmost_app or "").lower()
         is_word_explicit = bool(re.search(r'\b(word|documento word|file word|word vuoto)\b', t))
         session_is_word = (not explicit_front_passed) and (session_ctx.get("last_app") == "Microsoft Word")
@@ -163,7 +430,6 @@ class SystemOneEngine:
             as_pdf = "pdf" in t
             file_name = "documento.pdf" if as_pdf else "documento.docx"
             params = {"path": f"~/Desktop/{file_name}", "as_pdf": as_pdf}
-            # High risk action: p_score=0.90 yields JEV = 0.90 - (0.10 * 1.10) = 0.79 >= 0.75
             p_score = 0.94 if is_word_explicit else (0.90 if front_is_word else 0.88)
             jev = self._calc_jev(p_score, "high")
             if jev >= 0.75:
@@ -238,9 +504,6 @@ class SystemOneEngine:
             ]
             atticus_feedback.save_pending_choice(text, alternatives, front_app=frontmost_app)
             return 0.65, "disambiguation", {}, alternatives
-            # Save state in pending_choice.json with 25s TTL
-            atticus_feedback.save_pending_choice(text, alternatives, front_app=frontmost_app)
-            return 0.65, "disambiguation", {}, alternatives
 
         # Fallback to System 2 (Gemini)
         return 0.20, "ask_gemini", {"query": text}, []
@@ -301,7 +564,6 @@ class SystemOneEngine:
             ok, out = word.format_keyword(kw, make_bold=bold, highlight_color=hl)
             if ok:
                 update_session_context(app="Microsoft Word", action_id="word_format_keyword", target_text=kw)
-                # Rollback via Word undo
                 atticus_feedback.record_action(
                     prompt=prompt,
                     action_type="word_undo",
