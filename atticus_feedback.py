@@ -227,7 +227,7 @@ def resolve_pending_choice(text):
 
 # --- 2. Action Tracking (Indefinite Undo Persistence) ---
 
-def record_action(prompt, action_type, executed_cmds=None, rollback_cmd=None, skill_key=None, metadata=None):
+def record_action(prompt, action_type, executed_cmds=None, rollback_cmd=None, skill_key=None, metadata=None, rollback_strategy=None):
     """
     Saves the last executed action to disk.
     If there was a previous action, consolidates (reinforces) the previous skill
@@ -250,6 +250,7 @@ def record_action(prompt, action_type, executed_cmds=None, rollback_cmd=None, sk
         "executed_cmds": executed_cmds or [],
         "rollback_cmd": rollback_cmd or "",
         "skill_key": skill_key or "",
+        "rollback_strategy": rollback_strategy or "",
         "metadata": metadata or {}
     }
     last_path = _get_last_action_path()
@@ -469,7 +470,34 @@ def handle_annulla():
     rollback_ok = False
     details = ""
 
-    if action_type == "word_create":
+    # Check explicit rollback_strategy or action_type
+    strat = last.get("rollback_strategy")
+    if strat in ("close_created_workbook_verified", "excel_undo", "close_created_doc_verified", "word_undo", "restore_window_bounds", "delete_if_empty"):
+        try:
+            from system_one.executor import execute_rollback_strategy
+            ok, msg = execute_rollback_strategy(strat, metadata)
+            if ok:
+                rollback_ok = True
+                details = msg
+        except Exception:
+            pass
+
+    if not rollback_ok and action_type in ("excel_create", "close_created_workbook_verified"):
+        wb_name = metadata.get("wb_name")
+        if wb_name:
+            from system_one.apps import excel
+            excel.close_workbook(wb_name=wb_name, saving=False)
+            rollback_ok = True
+            details = f"Chiusa cartella di lavoro '{wb_name}'."
+
+    elif not rollback_ok and action_type in ("excel_undo", "format_cells", "insert_table"):
+        from system_one.apps import excel
+        ok, out = excel.undo_last()
+        if ok:
+            rollback_ok = True
+            details = "Annullata ultima modifica su Excel."
+
+    elif not rollback_ok and action_type == "word_create":
         # Safe document close: only close document if name matches
         doc_name = metadata.get("doc_name")
         if doc_name:
@@ -478,7 +506,7 @@ def handle_annulla():
             rollback_ok = True
             details = f"Chiuso documento '{doc_name}'."
 
-    elif action_type == "window_place":
+    elif not rollback_ok and action_type == "window_place":
         # Geometric restore: restore previous exact bounds
         proc = metadata.get("app")
         bounds = metadata.get("bounds")
@@ -489,7 +517,7 @@ def handle_annulla():
                 rollback_ok = True
                 details = f"Ripristinata posizione finestra di {proc}."
 
-    elif action_type == "create_folder":
+    elif not rollback_ok and action_type == "create_folder":
         # Safe delete: delete folder only if empty
         folder_path = metadata.get("path")
         if folder_path:

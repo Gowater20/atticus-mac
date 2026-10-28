@@ -84,18 +84,18 @@ class TestRizzoAndUndo(unittest.TestCase):
 
     # --- 1. Rizzo Client Tests ---
 
-    def test_build_catalog_options(self):
+    def test_build_catalog_options_and_criteria(self):
         catalog = {
             "apps": {
                 "word": {
                     "actions": {
-                        "create_document": {},
-                        "save_document": {}
+                        "create_document": {"description": "Crea documento word", "triggers_it": ["nuovo file"]},
+                        "save_document": {"description": "Salva documento word"}
                     }
                 },
                 "window": {
                     "actions": {
-                        "snap_left": {}
+                        "snap_left": {"description": "Posiziona finestra a sinistra"}
                     }
                 }
             }
@@ -105,6 +105,15 @@ class TestRizzoAndUndo(unittest.TestCase):
         self.assertIn("word_save_document", options)
         self.assertIn("window_snap_left", options)
         self.assertEqual(len(options), 3)
+
+        criteria = rizzo_client.build_catalog_criteria(catalog)
+        self.assertIn("word_create_document", criteria)
+        self.assertIn("Crea documento word", criteria["word_create_document"])
+        self.assertIn("nuovo file", criteria["word_create_document"])
+
+        # Test normalize_action_id
+        self.assertEqual(rizzo_client.normalize_action_id("word_create_document", to_dot=True), "word.create_document")
+        self.assertEqual(rizzo_client.normalize_action_id("word.create_document", to_dot=False), "word_create_document")
 
     def test_extract_probabilities_structures(self):
         options = ["word_create_document", "window_snap_left"]
@@ -164,9 +173,10 @@ class TestRizzoAndUndo(unittest.TestCase):
         req = MockRizzoHandler.last_request
         self.assertIn("state", req)
         self.assertIn("Safari", req["state"])
-        self.assertEqual(req["model"], "system1")
+        self.assertEqual(req["model"], "rizzo-latest")
         self.assertEqual(req["questions"]["intent"]["type"], "choice")
-        self.assertIn("window_snap_left", req["questions"]["intent"]["options"])
+        self.assertIn("instructions", req["questions"]["intent"])
+        self.assertIn("window_snap_left", req["questions"]["intent"]["criteria"])
 
     def test_query_rizzo_intent_timeout(self):
         # Server delay exceeds timeout

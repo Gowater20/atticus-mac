@@ -12,7 +12,7 @@ import re
 import sys
 import json
 import time
-from .apps import word, window, finder
+from .apps import word, window, finder, excel
 from .context import get_frontmost_app, get_session_context, update_session_context
 import atticus_feedback
 import atticus_i18n
@@ -78,7 +78,14 @@ class SystemOneEngine:
         return {}
 
     def _map_action_to_intent_and_risk(self, act_key: str):
-        k = act_key.lower()
+        k = act_key.lower().replace(".", "_")
+        if "create_workbook" in k or "excel_create" in k:
+            return "excel_create_workbook", "low"
+        if "insert_table" in k:
+            return "excel_insert_table", "medium"
+        if "format_cells" in k:
+            return "excel_format_cells", "medium"
+
         if "create_document" in k or "create_and_format" in k or k == "word_create":
             return "word_create_and_format", "low"
         if "insert_title" in k:
@@ -208,9 +215,59 @@ class SystemOneEngine:
             f_name = (m_folder.group(1) or "Nuova Cartella").strip().strip('\'"') if m_folder else "Nuova Cartella"
             return {"name": f_name or "Nuova Cartella", "path": "~/Desktop"}
 
+        elif intent == "excel_create_workbook":
+            title = ""
+            m_title = re.search(
+                r'(?:titolo\s+(?:con\s+|di\s+|[\'"]?)|chiamat[oa]\s+[\'"]?|intitolat[oa]\s+[\'"]?)([^\,\;\n]+?)(?:[\'"]|\s+(?:e|con)\s+(?:colonne|tabella)|\,\s*con|$)',
+                norm_text,
+                re.IGNORECASE
+            )
+            if m_title:
+                title = m_title.group(1).strip().strip('\'"')
+
+            headers = []
+            m_hdrs = re.search(r'(?:colonne|intestazioni|campi)\s*:?\s*([^\;\n]+)', norm_text, re.IGNORECASE)
+            if m_hdrs:
+                raw_hdrs = m_hdrs.group(1).strip()
+                headers = [h.strip().strip('\'"') for h in re.split(r',\s*|\s+e\s+', raw_hdrs) if h.strip()]
+
+            return {
+                "title": title,
+                "headers": headers
+            }
+
+        elif intent == "excel_insert_table":
+            headers = []
+            m_hdrs = re.search(r'(?:colonne|intestazioni|con\s+colonne|campi)\s*:?\s*([^\;\n]+)', norm_text, re.IGNORECASE)
+            if m_hdrs:
+                raw_hdrs = m_hdrs.group(1).strip()
+                headers = [h.strip().strip('\'"') for h in re.split(r',\s*|\s+e\s+', raw_hdrs) if h.strip()]
+            if not headers:
+                headers = ["Colonna 1", "Colonna 2"]
+            return {"headers": headers}
+
+        elif intent == "excel_format_cells":
+            m_range = re.search(r'(?:intervallo|intervalli|celle?)\s+([a-zA-Z0-9\:]+)', norm_text, re.IGNORECASE)
+            range_ref = m_range.group(1).strip() if m_range else "selection"
+            bold = ("grassetto" in t) or ("formatta" in t and "valuta" not in t)
+            currency = any(w in t for w in ["valuta", "euro", "prezzo", "prezzi", "importo", "importi", "€", "$"])
+            return {
+                "range": range_ref,
+                "bold": bold,
+                "currency": currency
+            }
+
         return {}
 
     def _get_action_label(self, intent, params):
+        if intent == "excel_create_workbook":
+            title = params.get("title", "")
+            return f"Crea nuova cartella Excel{f' ({title})' if title else ''}"
+        if intent == "excel_insert_table":
+            return "Inserisci tabella nel foglio Excel attivo"
+        if intent == "excel_format_cells":
+            r = params.get("range", "selezione")
+            return f"Formatta celle ({r}) in Excel"
         if intent == "window_split":
             return "Affianca finestre (Word a sinistra, Safari a destra)"
         if intent == "window_place":
@@ -296,15 +353,16 @@ class SystemOneEngine:
         use_rizzo = settings.get("useRizzoFlow", False)
 
         if use_rizzo:
-            from .rizzo_client import query_rizzo_intent
+            from .rizzo_client import query_rizzo_intent, RIZZO_TIMEOUT
             endpoint = settings.get("rizzoFlowUrl", "http://127.0.0.1:8017").rstrip("/") + "/v1/systemone"
+            timeout = float(settings.get("rizzoTimeout", RIZZO_TIMEOUT))
             try:
                 probs = query_rizzo_intent(
                     prompt=norm_text,
                     catalog=self.catalog,
                     context={"frontmost_app": frontmost_app},
                     endpoint=endpoint,
-                    timeout=0.25
+                    timeout=timeout
                 )
                 if not probs or not isinstance(probs, dict):
                     raise RuntimeError("Rizzo Flow returned invalid probabilities")
@@ -353,6 +411,42 @@ class SystemOneEngine:
         is_word_explicit = bool(re.search(r'\b(word|documento word|file word|word vuoto)\b', t))
         session_is_word = (not explicit_front_passed) and (session_ctx.get("last_app") == "Microsoft Word")
         is_word = front_is_word or is_word_explicit
+
+        front_is_excel = "excel" in (frontmost_app or "").lower()
+        is_excel_explicit = bool(re.search(r'\b(excel|foglio excel|file excel|cartella excel)\b', t))
+        session_is_excel = (not explicit_front_passed) and (session_ctx.get("last_app") == "Microsoft Excel")
+        is_excel = front_is_excel or is_excel_explicit
+
+        # -------------------------------------------------------------
+        # 0. Excel: Create Workbook
+        # -------------------------------------------------------------
+        is_excel_create = bool(re.search(r'\b(nuovo foglio excel|crea file excel|apri excel vuoto|apri excel|nuova cartella excel|crea tabella excel|foglio excel vuoto|nuovo file excel)\b', t))
+        if is_excel_create or (is_excel and re.search(r'\b(apri|crea|nuov[oa])\s+(?:file|foglio|cartella)?\b', t) and not re.search(r'\b(word|documento)\b', t)):
+            params = self._extract_params_for_intent("excel_create_workbook", norm_text)
+            p_score = 0.96 if is_excel_explicit else 0.88
+            jev = self._calc_jev(p_score, "low")
+            if jev >= 0.77:
+                return p_score, "excel_create_workbook", params, []
+
+        # -------------------------------------------------------------
+        # Excel: Insert Table
+        # -------------------------------------------------------------
+        if (is_excel or session_is_excel) and re.search(r'\b(inserisci tabella|crea tabella|aggiungi tabella|inserisci colonne)\b', t) and not is_excel_create:
+            params = self._extract_params_for_intent("excel_insert_table", norm_text)
+            p_score = 0.92 if (is_excel_explicit or front_is_excel) else 0.86
+            jev = self._calc_jev(p_score, "medium")
+            if jev >= 0.75:
+                return p_score, "excel_insert_table", params, []
+
+        # -------------------------------------------------------------
+        # Excel: Format Cells
+        # -------------------------------------------------------------
+        if (is_excel or session_is_excel) and re.search(r'\b(grassetto su celle|metti in valuta|formatta celle|celle in valuta|celle in grassetto)\b', t):
+            params = self._extract_params_for_intent("excel_format_cells", norm_text)
+            p_score = 0.92 if (is_excel_explicit or front_is_excel) else 0.86
+            jev = self._calc_jev(p_score, "medium")
+            if jev >= 0.75:
+                return p_score, "excel_format_cells", params, []
 
         # -------------------------------------------------------------
         # 1. Word: Create and Format Document (multi-step or standalone)
@@ -635,5 +729,60 @@ class SystemOneEngine:
                 )
                 return True, f"Cartella '{f_name}' creata sul Desktop."
             return False, f"Impossibile creare la cartella: {out}"
+
+        elif intent == "excel_create_workbook":
+            title = params.get("title", "")
+            headers = params.get("headers", [])
+            ok, wb_name = excel.create_workbook(title=title, headers=headers)
+            if not ok:
+                return False, f"Errore Excel: {wb_name}"
+
+            update_session_context(
+                app="Microsoft Excel",
+                action_id="excel_create_workbook",
+                target_text=title or "Cartella",
+                document_id=wb_name
+            )
+
+            atticus_feedback.record_action(
+                prompt=prompt,
+                action_type="excel_create",
+                rollback_strategy="close_created_workbook_verified",
+                metadata={"wb_name": wb_name, "title": title}
+            )
+            rep_title = f" con titolo '{title}'" if title else ""
+            rep_hdrs = f" e tabella ({', '.join(headers)})" if headers else ""
+            return True, f"Creata nuova cartella di lavoro Excel '{wb_name}'{rep_title}{rep_hdrs}."
+
+        elif intent == "excel_insert_table":
+            headers = params.get("headers", [])
+            ok, out = excel.insert_table(headers=headers)
+            if ok:
+                update_session_context(app="Microsoft Excel", action_id="excel_insert_table")
+                atticus_feedback.record_action(
+                    prompt=prompt,
+                    action_type="excel_undo",
+                    rollback_strategy="excel_undo",
+                    metadata={"headers": headers}
+                )
+                return True, "Tabella con intestazioni inserita nel foglio Excel attivo."
+            return False, f"Impossibile inserire la tabella in Excel: {out}"
+
+        elif intent == "excel_format_cells":
+            r_ref = params.get("range", "selection")
+            bold = params.get("bold", True)
+            curr = params.get("currency", False)
+            ok, out = excel.format_cells(range_ref=r_ref, bold=bold, currency=curr)
+            if ok:
+                update_session_context(app="Microsoft Excel", action_id="excel_format_cells")
+                atticus_feedback.record_action(
+                    prompt=prompt,
+                    action_type="excel_undo",
+                    rollback_strategy="excel_undo",
+                    metadata={"range": r_ref, "bold": bold, "currency": curr}
+                )
+                fmt_desc = "valuta" if curr and not bold else ("grassetto" if bold and not curr else "grassetto e valuta")
+                return True, f"Celle ({r_ref}) formattate in {fmt_desc} in Excel."
+            return False, f"Impossibile formattare le celle in Excel: {out}"
 
         return False, "Azione non gestita da System 1"

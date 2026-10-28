@@ -79,6 +79,59 @@
         }
       }
     },
+    "excel": {
+      "name": "Microsoft Excel",
+      "bundle_id": "com.microsoft.Excel",
+      "actions": {
+        "create_workbook": {
+          "description": "Crea una nuova cartella di lavoro Excel con titolo e tabella opzionale",
+          "risk_level": "low",
+          "triggers_it": [
+            "nuovo foglio excel",
+            "crea file excel",
+            "apri excel vuoto",
+            "nuova cartella excel",
+            "crea tabella excel"
+          ],
+          "keywords": ["excel", "foglio", "tabella", "cartella di lavoro", "nuovo"],
+          "parameters": {
+            "title": {"type": "string", "default": ""},
+            "headers": {"type": "list", "default": []}
+          },
+          "rollback_strategy": "close_created_workbook_verified"
+        },
+        "insert_table": {
+          "description": "Inserisce dati tabellari con riga di intestazione nel foglio Excel attivo",
+          "risk_level": "medium",
+          "triggers_it": [
+            "inserisci tabella excel",
+            "crea tabella",
+            "aggiungi tabella"
+          ],
+          "keywords": ["tabella", "inserisci", "colonne"],
+          "parameters": {
+            "headers": {"type": "list", "required": true}
+          },
+          "rollback_strategy": "excel_undo"
+        },
+        "format_cells": {
+          "description": "Formatta celle o intervallo (grassetto, valuta)",
+          "risk_level": "medium",
+          "triggers_it": [
+            "grassetto su celle",
+            "metti in valuta",
+            "formatta celle"
+          ],
+          "keywords": ["celle", "grassetto", "valuta", "formatta"],
+          "parameters": {
+            "range": {"type": "string", "default": "selection"},
+            "bold": {"type": "boolean", "default": true},
+            "currency": {"type": "boolean", "default": false}
+          },
+          "rollback_strategy": "excel_undo"
+        }
+      }
+    },
     "window": {
       "name": "Window Management",
       "bundle_id": "com.apple.systemevents",
