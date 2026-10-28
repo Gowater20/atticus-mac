@@ -190,7 +190,8 @@ def resolve_pending_choice(text):
     if not pending:
         return False, None
 
-    t = text.strip().lower()
+    t = re.sub(r'^[,\.\s!?\'"]+|[\,\.\s!?\'"]+$', '', str(text or "")).strip().lower()
+    t = re.sub(r'\s+', ' ', t)
     options = pending.get("options", [])
     if not options:
         clear_pending_choice()
@@ -201,15 +202,27 @@ def resolve_pending_choice(text):
         choice_idx = 0
     elif t in ("2", "due", "la seconda", "opzione due", "seconda"):
         choice_idx = 1
-    elif t in ("3", "tre", "la terza", "opzione tre", "terza", "chiedi a gemini", "gemini"):
+    elif t in ("3", "tre", "la terza", "opzione tre", "terza"):
         choice_idx = 2
+    elif t in ("chiedi a gemini", "gemini", "usa gemini", "system 2", "system2"):
+        for i, opt in enumerate(options):
+            act_id = opt.get("action_id", "").lower()
+            lbl = opt.get("label", "").lower()
+            if act_id in ("ask_gemini", "system2.gemini", "system2_ask_gemini") or "gemini" in lbl:
+                choice_idx = i
+                break
 
     if choice_idx is not None and choice_idx < len(options):
-        selected = options[choice_idx]
+        selected = dict(options[choice_idx])
         original_query = pending.get("original_query", "")
-        chosen_intent = selected.get("action_id", "")
-        extracted_params = selected.get("extracted_params", {})
+        selected["original_query"] = original_query
 
+        extracted_params = dict(selected.get("extracted_params") or {})
+        if original_query:
+            extracted_params["query"] = original_query
+        selected["extracted_params"] = extracted_params
+
+        chosen_intent = selected.get("action_id", "")
         if original_query and chosen_intent:
             save_user_correction(
                 prompt=original_query,

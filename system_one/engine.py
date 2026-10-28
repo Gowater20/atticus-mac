@@ -88,6 +88,8 @@ class SystemOneEngine:
 
         if "create_document" in k or "create_and_format" in k or k == "word_create":
             return "word_create_and_format", "low"
+        if "append_text" in k or "word_append" in k or "word_edit" in k or "edit_document" in k:
+            return "word_append_text", "low"
         if "insert_title" in k:
             return "word_create_and_format", "medium"
         if "format_keyword" in k:
@@ -114,6 +116,9 @@ class SystemOneEngine:
             return "finder_create_folder", "medium"
         if "reveal" in k:
             return "finder_reveal_item", "low"
+
+        if "ask_gemini" in k or "system2" in k:
+            return "ask_gemini", "low"
 
         return k, "medium"
 
@@ -162,6 +167,29 @@ class SystemOneEngine:
                 "kw_bold": kw_bold,
                 "kw_hl": kw_hl
             }
+
+        elif intent == "word_append_text":
+            body = ""
+            if "lorem ipsum" in t:
+                m_lines = re.search(r'(\d+)\s*(?:righe|righi|paragrafi|frasi)', t)
+                body = LOREM_IPSUM_1 if (m_lines and int(m_lines.group(1)) <= 1) else LOREM_IPSUM_3
+            else:
+                m_text = re.search(
+                    r'(?:scrivendo|scrivi(?:\s+nel\s+documento)?|aggiungi(?:\s+testo|\s+al\s+documento)?|inserisci(?:\s+testo)?|con\s+testo|testo)\s*:?\s*[\'\"“]?([^\;\n]+)',
+                    norm_text,
+                    re.IGNORECASE
+                )
+                if m_text:
+                    body = m_text.group(1).strip().strip('\'"“”')
+                else:
+                    cleaned = re.sub(
+                        r'^(?:modifica|aggiorna)\s+(?:il\s+)?(?:documento|file)(?:\s+word)?\s*',
+                        '',
+                        norm_text,
+                        flags=re.IGNORECASE
+                    ).strip().strip('\'"“”')
+                    body = cleaned or norm_text.strip()
+            return {"text": body}
 
         elif intent == "word_format_keyword":
             m_format_only = re.search(r'(?:metti in grassetto|evidenzia|grassetto su)(?:\s+(?:la parola|il termine|la|il|lo|gli|le))*\s+[\'\"“]?([a-zA-Z0-9_\-]+)', norm_text, re.IGNORECASE)
@@ -284,22 +312,47 @@ class SystemOneEngine:
         if intent == "finder_create_folder":
             name = params.get("name", "cartella")
             return f"Crea cartella '{name}' sul Desktop"
+        if intent == "word_append_text":
+            txt = params.get("text", "")
+            preview = (txt[:25] + "...") if len(txt) > 25 else txt
+            return f"Aggiungi testo al documento Word attivo{f' (\"{preview}\")' if preview else ''}"
+        if intent in ("ask_gemini", "system2.gemini", "system2_ask_gemini"):
+            return "Chiedi a Gemini (analisi avanzata)"
         return intent
 
     def _build_alternatives_from_candidates(self, candidates, norm_text, frontmost_app=None):
         alts = []
-        for i, c in enumerate(candidates, 1):
+        seen_intents = set()
+        seen_labels = set()
+
+        for c in candidates:
             intent = c["intent"]
-            params = self._extract_params_for_intent(intent, norm_text, action_key=c["action_key"], frontmost_app=frontmost_app)
+            if intent in ("ask_gemini", "system2.gemini", "system2_ask_gemini"):
+                intent = "system2.gemini"
+                params = {"query": norm_text}
+            else:
+                params = self._extract_params_for_intent(intent, norm_text, action_key=c["action_key"], frontmost_app=frontmost_app)
+
             label = self._get_action_label(intent, params)
+            norm_intent = "ask_gemini" if intent in ("ask_gemini", "system2.gemini") else intent
+
+            if norm_intent in seen_intents or label in seen_labels:
+                continue
+
+            seen_intents.add(norm_intent)
+            seen_labels.add(label)
+
             alts.append({
-                "choice_id": i,
+                "choice_id": len(alts) + 1,
                 "action_id": intent,
                 "label": label,
                 "extracted_params": params,
                 "jev_score": c["jev_score"]
             })
-        if len(alts) < 3:
+            if len(alts) >= 3:
+                break
+
+        if len(alts) < 3 and "ask_gemini" not in seen_intents:
             alts.append({
                 "choice_id": len(alts) + 1,
                 "action_id": "system2.gemini",
@@ -329,18 +382,24 @@ class SystemOneEngine:
         resolved, choice = atticus_feedback.resolve_pending_choice(norm_text)
         if resolved and choice:
             action_id = choice.get("action_id", "")
-            if action_id == "system2.gemini":
-                return 0.20, "ask_gemini", {"query": choice.get("extracted_params", {}).get("query", text)}, []
+            if action_id in ("system2.gemini", "ask_gemini", "system2_ask_gemini"):
+                orig_q = (
+                    choice.get("original_query")
+                    or choice.get("extracted_params", {}).get("query")
+                    or text
+                )
+                return 0.20, "ask_gemini", {"query": orig_q}, []
             return 0.99, action_id, choice.get("extracted_params", {}), []
 
         # Step 0.5: Fast-Path on user_corrections via get_user_correction(norm_text)
         corr = atticus_feedback.get_user_correction(norm_text)
         if corr:
-            intent = corr.get("intent") if isinstance(corr, dict) else corr
+            raw_intent = corr.get("intent") if isinstance(corr, dict) else corr
             params = corr.get("params", {}) if isinstance(corr, dict) else {}
+            canonical_intent, _ = self._map_action_to_intent_and_risk(raw_intent)
             if not params:
-                params = self._extract_params_for_intent(intent, norm_text, frontmost_app=frontmost_app)
-            return 1.0, intent, params, []
+                params = self._extract_params_for_intent(canonical_intent, norm_text, frontmost_app=frontmost_app)
+            return 1.0, canonical_intent, params, []
 
         # Context detection
         explicit_front_passed = frontmost_app is not None
@@ -447,6 +506,17 @@ class SystemOneEngine:
             jev = self._calc_jev(p_score, "medium")
             if jev >= 0.75:
                 return p_score, "excel_format_cells", params, []
+
+        # -------------------------------------------------------------
+        # Word: Append / Edit active document
+        # -------------------------------------------------------------
+        is_edit_word = bool(re.search(r'\b(modifica\s+(?:il\s+)?(?:documento|file)|aggiungi\s+(?:testo|al\s+documento)|scrivi\s+nel\s+documento|inserisci\s+testo|continua\s+a\s+scrivere)\b', t))
+        if (is_word or session_is_word) and is_edit_word:
+            params = self._extract_params_for_intent("word_append_text", norm_text)
+            p_score = 0.94 if (is_word_explicit or front_is_word) else 0.88
+            jev = self._calc_jev(p_score, "low")
+            if jev >= 0.77:
+                return p_score, "word_append_text", params, []
 
         # -------------------------------------------------------------
         # 1. Word: Create and Format Document (multi-step or standalone)
@@ -650,6 +720,26 @@ class SystemOneEngine:
             rep_title = f" con titolo '{title}'" if title else ""
             rep_kw = f" e formattato '{kw}'" if kw else ""
             return True, f"Creato nuovo documento Word{rep_title}{rep_kw}."
+
+        elif intent == "word_append_text":
+            text_to_add = params.get("text", "")
+            ok, doc_name_or_err = word.append_text(text=text_to_add)
+            if ok:
+                update_session_context(
+                    app="Microsoft Word",
+                    action_id="word_append_text",
+                    target_text=text_to_add[:30],
+                    document_id=doc_name_or_err
+                )
+                atticus_feedback.record_action(
+                    prompt=prompt,
+                    action_type="word_undo",
+                    rollback_strategy="word_undo",
+                    rollback_cmd=['osascript', '-e', 'tell application "Microsoft Word" to tell active document to undo'],
+                    metadata={"doc_name": doc_name_or_err, "text": text_to_add}
+                )
+                return True, f"Testo aggiunto al documento Word '{doc_name_or_err}'."
+            return False, f"Impossibile aggiungere testo in Word: {doc_name_or_err}"
 
         elif intent == "word_format_keyword":
             kw = params.get("keyword")

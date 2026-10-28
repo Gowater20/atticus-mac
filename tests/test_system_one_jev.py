@@ -141,6 +141,44 @@ class TestSystemOneJEV(unittest.TestCase):
         self.assertAlmostEqual(updated_skills["sposta safari a destra"]["confidence"], 0.552, places=2)
         self.assertEqual(updated_skills["sposta safari a destra"]["undo_count"], 1)
 
+    def test_word_append_text_parsing(self):
+        """Tests intent recognition and param extraction for append_text."""
+        prompt = "modifica il documento word scrivendo Nuova sezione di bilancio"
+        conf, intent, params, _ = self.engine.analyze(prompt)
+        self.assertGreaterEqual(conf, 0.85)
+        self.assertEqual(intent, "word_append_text")
+        self.assertEqual(params.get("text"), "Nuova sezione di bilancio")
+
+        # Implicit Word frontmost
+        prompt_implicit = "aggiungi al documento: Conclusioni finali"
+        conf2, intent2, params2, _ = self.engine.analyze(prompt_implicit, frontmost_app="Microsoft Word")
+        self.assertGreaterEqual(conf2, 0.85)
+        self.assertEqual(intent2, "word_append_text")
+        self.assertEqual(params2.get("text"), "Conclusioni finali")
+
+    def test_disambiguation_resolve_gemini(self):
+        """Tests resolving disambiguation choice via 'chiedi a gemini' or 'gemini'."""
+        conf, intent, params, alts = self.engine.analyze("organizza finestre e documenti")
+        self.assertEqual(intent, "disambiguation")
+
+        # Resolve via "chiedi a gemini"
+        conf_res, intent_res, params_res, _ = self.engine.analyze("chiedi a gemini")
+        self.assertEqual(intent_res, "ask_gemini")
+        self.assertEqual(params_res.get("query"), "organizza finestre e documenti")
+
+    def test_alternatives_deduplication(self):
+        """Tests that _build_alternatives_from_candidates removes duplicate intents and labels."""
+        candidates = [
+            {"intent": "word_create_and_format", "action_key": "create_doc", "jev_score": 0.8},
+            {"intent": "word_create_and_format", "action_key": "create_doc_2", "jev_score": 0.7},
+            {"intent": "system2.gemini", "action_key": "gemini", "jev_score": 0.5},
+            {"intent": "ask_gemini", "action_key": "ask", "jev_score": 0.4},
+        ]
+        alts = self.engine._build_alternatives_from_candidates(candidates, "bozza")
+        intents = [a["action_id"] for a in alts]
+        self.assertEqual(len(intents), len(set(intents)))
+        self.assertIn("system2.gemini", intents)
+
 
 if __name__ == "__main__":
     unittest.main()

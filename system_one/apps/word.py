@@ -111,6 +111,44 @@ def insert_title(doc_title="", title_size=20, title_bold=True):
     return ok, out
 
 
+def append_text(text="", font_size=12, make_bold=False):
+    """
+    Appends or writes text at the end of the active Word document.
+    If no active document exists, creates a new one.
+    Returns (success: bool, doc_name_or_err: str).
+    """
+    if not text:
+        return False, "Nessun testo specificato"
+
+    esc_text = _escape_as_string(text)
+    bold_str = "true" if make_bold else "false"
+
+    script = f'''
+    tell application "Microsoft Word"
+        activate
+        if not (exists active document) then
+            make new document
+        end if
+        set dName to name of active document
+        set myRange to text object of active document
+        set charCount to count characters of myRange
+        set endRange to collapse range myRange direction collapse end
+        if charCount > 1 then
+            set content of endRange to (return & {esc_text})
+        else
+            set content of endRange to {esc_text}
+        end if
+        set font size of font object of endRange to {int(font_size)}
+        set bold of font object of endRange to {bold_str}
+        return dName
+    end tell
+    '''
+    ok, out, _ = run_applescript(script, timeout=6.0, target_app=APP_NAME)
+    if ok:
+        return True, out.strip() or "Documento"
+    return False, out
+
+
 def format_keyword(keyword, make_bold=False, highlight_color="yellow"):
     """
     Finds and formats a keyword in the active document.

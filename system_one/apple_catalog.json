@@ -24,6 +24,37 @@
           },
           "rollback_strategy": "close_created_doc_verified"
         },
+        "append_text": {
+          "description": "Modifica il documento Word attivo o aggiunge nuovo testo in coda",
+          "risk_level": "low",
+          "triggers_it": [
+            "modifica documento",
+            "modifica il documento",
+            "modifica file word",
+            "scrivi nel documento",
+            "aggiungi testo",
+            "inserisci testo",
+            "scrivendo",
+            "scrivi appunto",
+            "aggiungi al documento",
+            "continua a scrivere"
+          ],
+          "keywords": [
+            "modifica",
+            "aggiungi",
+            "scrivi",
+            "scrivendo",
+            "testo",
+            "appunto",
+            "documento",
+            "inserisci",
+            "continua"
+          ],
+          "parameters": {
+            "text": {"type": "string", "required": true}
+          },
+          "rollback_strategy": "word_undo"
+        },
         "insert_title": {
           "description": "Inserisce un titolo formattato nel documento Word attivo",
           "risk_level": "medium",
@@ -201,6 +232,19 @@
           "parameters": {
             "path": {"type": "string", "required": true}
           },
+          "rollback_strategy": "none"
+        }
+      }
+    },
+    "system2": {
+      "name": "System 2 Reasoning AI",
+      "bundle_id": "com.google.gemini",
+      "actions": {
+        "ask_gemini": {
+          "description": "Rispondi a domande, spiega concetti, scrivi analisi o fai ragionamenti complessi senza interagire con app desktop",
+          "risk_level": "low",
+          "triggers_it": ["spiegami", "chi è", "cosa è", "analizza", "come fare", "idee per", "strategie", "dimmi", "perché", "scrivi una mail"],
+          "keywords": ["spiega", "perché", "chi", "cosa", "come", "strategia", "idea", "analizza", "domanda"],
           "rollback_strategy": "none"
         }
       }

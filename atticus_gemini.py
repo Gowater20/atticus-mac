@@ -39,6 +39,22 @@ def _model(att, default):
     return m if m and m not in ('haiku', 'sonnet', 'opus') else default
 
 
+def _set_turn_model(att, model):
+    att = att or _att()
+    if hasattr(att, 'TURN') and isinstance(att.TURN, dict):
+        att.TURN['model'] = model
+    try:
+        import sys
+        f = sys._getframe()
+        while f:
+            if 'model' in f.f_locals and f.f_code.co_name == 'main':
+                f.f_locals['model'] = model
+                break
+            f = f.f_back
+    except Exception:
+        pass
+
+
 def check_gemini_setup(att=None):
     """Verify if `agy` CLI is installed or a Gemini API key is available."""
     att = att or _att()
@@ -97,9 +113,14 @@ def run_gemini(task, shots=(), request=None):
     att.save_request(ask, att.main_ask(task, request)[0])
 
     agy = shutil.which('agy') or shutil.which('antigravity')
+    key = _api_key(att)
     if agy:
-        return _run_agy(att, ask, task, shots, request, agy)
-    return _run_api(att, ask, task, shots, request, _api_key(att))
+        reply, cost, steps = _run_agy(att, ask, task, shots, request, agy)
+        if not att.run.ok and key and att.run.why not in ('cancelled', 'setup_needed'):
+            att.say('·', 'Antigravity CLI did not finish, trying Gemini API fallback...')
+            return _run_api(att, ask, task, shots, request, key)
+        return reply, cost, steps
+    return _run_api(att, ask, task, shots, request, key)
 
 
 def _extract_agy_tool(obj):
@@ -108,11 +129,17 @@ def _extract_agy_tool(obj):
     if ev == 'step_update':
         s = obj.get('step_update') or {}
         if s.get('step_type') == 'tool':
+            state = s.get('state') or s.get('status') or obj.get('state') or obj.get('status') or ''
+            if state and str(state).upper() != 'ACTIVE':
+                return None, None
             tname = s.get('tool_name') or 'Tool'
             tinfo = s.get('tool_info') or {}
             params = tinfo.get('parameters') or {}
             return tname, params
     if ev in ('tool_call', 'tool_use', 'function_call') or 'tool_name' in obj or 'tool' in obj:
+        state = obj.get('state') or obj.get('status') or ''
+        if state and str(state).upper() != 'ACTIVE':
+            return None, None
         name = obj.get('tool_name') or obj.get('name') or (obj.get('tool') if isinstance(obj.get('tool'), str) else '')
         inp = obj.get('tool_input') or obj.get('input') or obj.get('args') or obj.get('arguments') or {}
         if isinstance(obj.get('tool'), dict):
@@ -129,6 +156,7 @@ def _extract_agy_tool(obj):
 
 def _run_agy(att, ask, task, shots, request, agy_bin):
     model = _model(att, DEFAULT_AGY_MODEL)
+    _set_turn_model(att, model)
     system = att.system_prompt(att.ASK_FIRST if att.pref('safe', True) else att.NEVER)
     try:
         import atticus_i18n
@@ -141,8 +169,7 @@ def _run_agy(att, ask, task, shots, request, agy_bin):
         user_text = 'Screen pictures (inspect if needed):\n' + '\n'.join(shot_lines) + '\n\n' + user_text
     full_prompt = f"{system}\n\n{user_text}"
 
-    args = [agy_bin, '--output-format', 'stream-json']
-    args += ['--mode', 'accept-edits'] if att.pref('safe', True) else ['--dangerously-skip-permissions']
+    args = [agy_bin, '--output-format', 'stream-json', '--dangerously-skip-permissions']
     if model:
         args += ['--model', model]
     args += ['-p', full_prompt]
@@ -234,8 +261,9 @@ def _run_agy(att, ask, task, shots, request, agy_bin):
             elif ev == 'result' or 'result' in obj:
                 res = obj.get('result')
                 if isinstance(res, dict):
-                    result_error = bool(res.get('is_error') or res.get('error') or res.get('status') == 'ERROR')
-                    txt = res.get('text') or res.get('result') or res.get('output') or res.get('response') or ''
+                    status_str = str(res.get('status') or '').upper()
+                    result_error = bool(res.get('is_error') or res.get('error') or (status_str and status_str not in ('SUCCESS', 'OK', 'COMPLETED')))
+                    txt = res.get('response') or res.get('text') or res.get('result') or res.get('output') or ''
                     if isinstance(txt, str) and txt.strip():
                         reply = txt
                     c = res.get('total_cost_usd') or res.get('cost') or 0
@@ -262,27 +290,40 @@ def _run_agy(att, ask, task, shots, request, agy_bin):
 
     p.relay_thread.join(0.3)
 
-    if not reply and deltas:
+    # Only promote deltas if no tools were invoked and process exited cleanly without error.
+    # When tools are invoked, preliminary deltas are just preambles (e.g. "Cerco le notizie..."),
+    # and agy will deliver the final answer via result.response.
+    if not reply and not cmds and not result_error and p.returncode == 0 and deltas:
         reply = ''.join(deltas)
     reply = att.without_handoff_line(reply).strip()
 
     errors.seek(0)
     stderr_txt = errors.read(2000).strip()
-    if p.stdout:
+    if p.stdout and hasattr(p.stdout, 'close'):
         p.stdout.close()
-    errors.close()
+    if hasattr(errors, 'close'):
+        errors.close()
 
     att.run.ran = cmds
     if timed_out[0]:
+        att.run.ok = False
         att.run.why = 'timed_out'
         return 'Gemini (agy) timed out before finishing. Please try again.', cost, steps
 
-    if result_error or (not reply and p.returncode):
-        detail = att.run.error or stderr_txt or reply[:300]
+    if result_error or p.returncode != 0:
+        att.run.ok = False
+        detail = att.run.error or stderr_txt or (reply[:300] if reply else '')
         att.run.error = att.clean(detail)
-        att.run.why = att.failure_why(detail)
+        att.run.why = att.failure_why(detail) if detail else 'error'
         reason = att.clean(detail) or f'exit code {p.returncode}'
         return f'Gemini (agy) stopped: {reason}.', cost, steps
+
+    if cmds and not reply:
+        att.run.ok = False
+        att.run.why = 'no_reply'
+        detail = att.run.error or stderr_txt or 'Commands were executed but no conclusive response was generated.'
+        att.run.error = att.clean(detail)
+        return 'Gemini (agy) completed commands but produced no final response.', cost, steps
 
     att.run.ok = bool(reply and not p.returncode and not result_error)
     att.run.cmds = cmds if att.run.ok else []
@@ -297,6 +338,7 @@ def _run_agy(att, ask, task, shots, request, agy_bin):
 def _run_api(att, ask, task, shots, request, api_key):
     """Direct Gemini REST API fallback with multi-turn tool calling gated by Atticus."""
     model = _model(att, DEFAULT_API_MODEL)
+    _set_turn_model(att, model)
     system = att.system_prompt(att.ASK_FIRST if att.pref('safe', True) else att.NEVER)
     try:
         import atticus_i18n

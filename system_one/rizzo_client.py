@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 from typing import Dict, Any, List, Optional
 
-RIZZO_TIMEOUT = 5.0  # 5.0s timeout: 4B model inference on Mac takes ~3.2s
+RIZZO_TIMEOUT = 10.0  # 10.0s timeout to safely accommodate 4B model inference (takes ~4-5s)
 DEFAULT_ENDPOINT = "http://127.0.0.1:8017/v1/systemone"
 DEFAULT_TIMEOUT = RIZZO_TIMEOUT
 DEFAULT_MODEL = "rizzo-latest"
